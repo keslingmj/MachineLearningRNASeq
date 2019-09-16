@@ -2,7 +2,7 @@
 title: "Using Lasso to Find Predictors for Breast Cancer"
 author: "Michael Kesling"
 date: "8/23/2019"
-output: html_document
+output: rmarkdown::github_document # html_document
 ---
 
 ```{r setup, include=FALSE}
@@ -113,13 +113,14 @@ wangTestNorm <- wangTestNorm[,colnames(wangTrainNorm)]
 all(colnames(wangTestNorm) == colnames(wangTrainNorm))
 ```
 # Perform Logistic Regression with Lasso Coefficient Shrinkage
-Now that each sample has been centered around zero and scaled by the standard deviation, we can perform logistic regression using the *glmnet* function
+Now that each sample has been centered around zero and scaled by the standard deviation, we can perform logistic regression using the *glmnet* function  
 
-```{r, fig.height=8, fig.width=8}
+```{r, fig.height=6, fig.width=8}
 require(glmnet)
 require(ggplot2)
 # install_github("ririzarr/rafalib")
 require(rafalib)
+set.seed(1011)
 xTrain <- as.matrix(wangTrainNorm)
 fit.lasso <- glmnet(xTrain, diagTrain, family="binomial",
                     alpha = 1)   # 'binomial' needed for logistic regression
@@ -128,7 +129,7 @@ mypar(1,2)   # doesn't work in RMD, but does on R command line
 plot(fit.lasso, xvar="dev", label=TRUE)
 plot(fit.lasso, xvar="lambda", label=TRUE) + abline(v=-2.88) + abline(v=-4)
 ```
-## Error
+## Choosing Simplest Model with Near-Minimum Error
 To determine what the simplest model that gives low error is, we'll plot MSE vs log-Lambda
 ```{r}
 set.seed(1011)
@@ -188,7 +189,7 @@ print(paste0("The model is yielding great results, with just ", tbl[2,1]," false
 print(paste0("This yields a sensitivity of ", tbl[2,2]/sum(tbl[,2]), " and a specificity of ", round(tbl[1,1]/sum(tbl[,1]),2), "."))
 ```
 ## Visualizing Model on Training Data
-We're going to visualize the reduced training dataset using only the non-zero coefficients from the Lasso model.
+We're going to visualize the reduced training dataset using only the non-zero coefficients from the Lasso model.  
 
 ```{r}
 # start by reducing training dataset
@@ -197,8 +198,8 @@ coefs <- cbind(rownames(coefs), coefs) %>% filter(X1!=0)
 xTrainReduced <- xTrain[,coefs$`rownames(coefs)`]   # (matrix)
 
 # now create the t-SNE plot
-require(Rtsne)
-require(ggplot2)
+require(Rtsne);
+require(ggplot2);
 set.seed(31234)
 tSNEout_reduced <- Rtsne(xTrainReduced)
 tsne_plot_reduced <- data.frame(x=tSNEout_reduced$Y[,1], y = tSNEout_reduced$Y[,2],
@@ -207,13 +208,13 @@ ggplot(tsne_plot_reduced) +
    geom_point(aes(x=x, y=y, color=col)) + 
    ggtitle("t-SNE Plot of Training Data Using Only Non-Zero Lasso Coefficients")
 ```
-Now let's try the t-SNE Plot of the non-reduced Training Dataset:
+Now let's try the t-SNE Plot of the non-reduced Training Dataset:  
 ```{r}
 #require(devtools)
 #install_github("ropensci/plotly")
-require(plotly)
-require(Rtsne)
-require(ggplot2)
+require(plotly);
+require(Rtsne);
+require(ggplot2);
 set.seed(31234)
 tSNEout_full <- Rtsne(xTrain, dims=2)
 tsne_plot_full <- data.frame(x=tSNEout_full$Y[,1], y = tSNEout_full$Y[,2], col=diagTrain)
@@ -224,9 +225,9 @@ ggplot(tsne_plot_full) +
 ```
 # Using t-SNE to separate out genes in full dataset
 ```{r}
-require(Rtsne)
-require(ggplot2)
-require(RColorBrewer)
+require(Rtsne);
+require(ggplot2);
+require(RColorBrewer);
 palette <- c("#000000", "#56B4E9")
 spctrlPal <- c("#9E0142", "#D53E4F", "#F46D43", "#FDAE61", "#FEE08B", "#FFFFBF", "#E6F598", "#ABDDA4", "#66C2A5","#3288BD", "#5E4FA2")
 # I need a vector for coloring genes that were important in Lasso model
@@ -263,13 +264,13 @@ ggplot(tsne_plot_genes) +
 ```
 We can see that there is a clean separation between genes whose expression is positively correlated with cancer (blue) and genes whose expression is negatively correlated with cancer (red).  This isn't necessarily surprising, as these are the genes that give the greatest predictive value for separating the disease state (cancer / healthy).
 
-# Ruling Out Arifacts
+## Ruling Out Arifacts
 One possibility that the Cancer / Healthy Breast samples segregate so cleanly in the t-SNE graph while using all data is that there could be a batch effect between these samples that isn't the "cancer"/"healthy" state, but is something else, such as repository/project (TCGA/GTEx), date, or other effect.  
 
-# A. Plotting TCGA / GTEx Batch Effects
+## A. Plotting TCGA / GTEx Batch Effects
 All GTEx samples are of healthy subjects.  Luckily, TCGA has a good numbered of healthy and cancer samples.  That should enable us to see if there is a major TCGA vs GTEx batch effect while looking at the healthy samples.  
 
-We're going to do this using the full set of predictors.
+We're going to do this using the full set of predictors.  
 ```{r}
 # we start by creating a vector of the 296 training examples according to their class
 classes3 <- subset(wangWithAttrib, idxTrain==TRUE)
