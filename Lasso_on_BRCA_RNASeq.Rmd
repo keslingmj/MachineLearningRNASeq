@@ -9,6 +9,8 @@ output: rmarkdown::github_document # html_document
 knitr::opts_chunk$set(echo = TRUE, fig.height=6, fig.width=8,
                       fig.align = "center", dpi=300)
 ```
+###### (Document in Progress)
+
 
 ### Objective:
 We are going to use the cleaned batch-normalized dataset of RNASeq data from 199 healthy breast samples and 199 breast tumors to find RNASeq signatures which predict the cancerous state.
@@ -63,13 +65,12 @@ wangTrain <- wangWithAge %>% filter(idxTrain==TRUE)    # 296 training obs
 wangTest <- wangWithAge %>% filter(idxTrain==FALSE)    #  99 test obs
 print(paste(dim(wangTrain), dim(wangTest)))
 ```
-# now we can finish preparing the data for ML
+### Normalizing Data for Lasso
 In order to perform Lasso, each gene must be normalized
 so that larger-unit betas don't dominate smaller betas
 
-#### THE DOCUMENTATION SAYS THAT THIS HAPPENS AUTOMATICALLY AND THAT THE VALUES
-#### OF THE COEFFICIENTS ARE RETURNED ON THE ORIGINAL SCALE, BUT I HAVE NOT RIGOROUSLY
-#### TESTED THIS.
+###### Need to rigorously test whether my normalization yields identical
+###### results to glmnet's own internal normalization.
 
 ```{r, fig.height=8, fig.width=8, message=FALSE}
 # start by converting data-frames to matrices, and create row names:
@@ -113,7 +114,7 @@ wangTestNorm <- cbind(wangTestNorm, zeros)
 wangTestNorm <- wangTestNorm[,colnames(wangTrainNorm)]
 all(colnames(wangTestNorm) == colnames(wangTrainNorm))
 ```
-# Perform Logistic Regression with Lasso Coefficient Shrinkage
+### Perform Logistic Regression with Lasso Coefficient Shrinkage
 Now that each sample has been centered around zero and scaled by the standard deviation, we can perform logistic regression using the *glmnet* function  
 
 ```{r, fig.height=6, fig.width=8, message=FALSE}
@@ -128,9 +129,9 @@ fit.lasso <- glmnet(xTrain, diagTrain, family="binomial",
                                  # alpha = 1 -> Lasso; alpha = 0 -> Ridge
 mypar(1,2)   # doesn't work in RMD, but does on R command line
 plot(fit.lasso, xvar="dev", label=TRUE)
-plot(fit.lasso, xvar="lambda", label=TRUE) + abline(v=-2.88) + abline(v=-4)
+plot(fit.lasso, xvar="lambda", label=TRUE) + abline(v=-3.77)
 ```
-## Choosing Simplest Model with Near-Minimum Error
+### Choosing Simplest Model with Near-Minimum Error
 To determine what the simplest model that gives low error is, we'll plot MSE vs log-Lambda
 ```{r message=FALSE}
 set.seed(1011)
@@ -150,11 +151,13 @@ print(paste("The best value of lambda is ", cv.lasso$lambda.1se))
 
 Let's look at the coefficient values for the selected model:  
 ```{r}
+# grabbing model coefficients
+# (if we substitute "fit.lasso" with "cv.lasso", it yields the identical coefs)
 coefs <- data.frame(as.matrix(coef(fit.lasso, s=cv.lasso$lambda.1se)))
 coefs <- cbind(rownames(coefs), coefs) %>% filter(X1!=0) %>% arrange(X1)
 print(coefs)
 ```
-# Predictions on Test Data
+### Predictions on Test Data
 Now that we've identified a Lasso-shrinked model, we'll see how well the model performs on the test data that were not involved in model training.  
 ```{r message=FALSE}
 # first, we create a matrix with intercept term derived from wangTestNorm
@@ -163,33 +166,32 @@ xTest <- cbind(1, wangTestNorm)
 colnames(xTest)[1] <- "(Intercept)"
 xTest <- as.matrix(xTest)
 
+######
+# TO DO: change setup so that we're only using the reduced model.
+######
+
 # we then extract the fitted "lambda.1se" coefficient
 nBeta <- coef(cv.lasso, s="lambda.1se")
 
 # we then perform the class prediction:
 testPredictions <- ifelse(xTest %*% nBeta > 0, 1, 0)
-#rownames(testPredictions) <- rownames(xTest)
-#predict(cv.lasso, xTest, s="lambda.1se", type="class") # says 
 
 # confusion matrix
 tbl <- table(diagTest, testPredictions)
 print(tbl)
 
-# I GET COMPLAINT ABOUT X / Y NOT HAVING SAME DIMENSIONS.  SO I'M GOING TO 
-# SUBSET TEST SET TO THOSE VALUES ONLY IN TRAINING SET.
-# FOR MISSING VALUES, I'LL ADD ALL ZEROS (WHICH WAS DONE ORIGINALLY)
-# I STILL NEED TO TEST IDEA OF WHETHER SCALING IS REALLY NEEDED, OR IF GLMNET
-# PERFORMS IT AS IT CLAIMS.  I BELIEVE MY RESULTS CHANGED AFTER SCALING, BUT THAT
-# COULD JUST BE THE SCALE OF THE COEFFICIENTS.
+# I had difficulty getting the 'predict()' function to work on this model
+# Many people online say the same thing, as well as predict's own error
+# message.  So I simply performed matrix multiplication.
 
 ```
 ```{r, include=FALSE}
-print(paste0("The model is yielding great results, with just ", tbl[2,1]," false positives and ", tbl[1,2], " no false negatives out of ", length(diagTest), " test predictions."))
+print(paste0("The model is yielding great results, with just ", tbl[2,1]," false positives and ", tbl[1,2], " false negatives out of ", length(diagTest), " test predictions."))
 ```
 ```{r, include=FALSE}
 print(paste0("This yields a sensitivity of ", tbl[2,2]/sum(tbl[,2]), " and a specificity of ", round(tbl[1,1]/sum(tbl[,1]),2), "."))
 ```
-## Visualizing Model on Training Data
+### Visualizing Model on Training Data
 We're going to visualize the reduced training dataset using only the non-zero coefficients from the Lasso model.  
 
 ```{r message=FALSE}

@@ -3,6 +3,8 @@ Using Lasso to Find Predictors for Breast Cancer
 Michael Kesling
 8/23/2019
 
+###### (Document in Progress)
+
 ### Objective:
 
 We are going to use the cleaned batch-normalized dataset of RNASeq data from 199 healthy breast samples and 199 breast tumors to find RNASeq signatures which predict the cancerous state.
@@ -66,16 +68,13 @@ print(paste(dim(wangTrain), dim(wangTest)))
 
     ## [1] "296 99"      "19740 19740"
 
-now we can finish preparing the data for ML
-===========================================
+### Normalizing Data for Lasso
 
 In order to perform Lasso, each gene must be normalized so that larger-unit betas don't dominate smaller betas
 
-#### THE DOCUMENTATION SAYS THAT THIS HAPPENS AUTOMATICALLY AND THAT THE VALUES
+###### Need to rigorously test whether my normalization yields identical
 
-#### OF THE COEFFICIENTS ARE RETURNED ON THE ORIGINAL SCALE, BUT I HAVE NOT RIGOROUSLY
-
-#### TESTED THIS.
+###### results to glmnet's own internal normalization.
 
 ``` r
 # start by converting data-frames to matrices, and create row names:
@@ -122,8 +121,7 @@ all(colnames(wangTestNorm) == colnames(wangTrainNorm))
 
     ## [1] TRUE
 
-Perform Logistic Regression with Lasso Coefficient Shrinkage
-============================================================
+### Perform Logistic Regression with Lasso Coefficient Shrinkage
 
 Now that each sample has been centered around zero and scaled by the standard deviation, we can perform logistic regression using the *glmnet* function
 
@@ -139,15 +137,14 @@ fit.lasso <- glmnet(xTrain, diagTrain, family="binomial",
                                  # alpha = 1 -> Lasso; alpha = 0 -> Ridge
 mypar(1,2)   # doesn't work in RMD, but does on R command line
 plot(fit.lasso, xvar="dev", label=TRUE)
-plot(fit.lasso, xvar="lambda", label=TRUE) + abline(v=-2.88) + abline(v=-4)
+plot(fit.lasso, xvar="lambda", label=TRUE) + abline(v=-3.77)
 ```
 
 <img src="Lasso_on_BRCA_RNASeq_files/figure-markdown_github/unnamed-chunk-4-1.png" style="display: block; margin: auto;" />
 
     ## integer(0)
 
-Choosing Simplest Model with Near-Minimum Error
------------------------------------------------
+### Choosing Simplest Model with Near-Minimum Error
 
 To determine what the simplest model that gives low error is, we'll plot MSE vs log-Lambda
 
@@ -169,6 +166,8 @@ Let's see what the value of lambda is for the 1-SE-from-minimum is:
 Let's look at the coefficient values for the selected model:
 
 ``` r
+# grabbing model coefficients
+# (if we substitute "fit.lasso" with "cv.lasso", it yields the identical coefs)
 coefs <- data.frame(as.matrix(coef(fit.lasso, s=cv.lasso$lambda.1se)))
 coefs <- cbind(rownames(coefs), coefs) %>% filter(X1!=0) %>% arrange(X1)
 print(coefs)
@@ -213,8 +212,7 @@ print(coefs)
     ## 36       SRP9-6726  0.127609843
     ## 37    P4HA3-283208  0.181781398
 
-Predictions on Test Data
-========================
+### Predictions on Test Data
 
 Now that we've identified a Lasso-shrinked model, we'll see how well the model performs on the test data that were not involved in model training.
 
@@ -225,13 +223,15 @@ xTest <- cbind(1, wangTestNorm)
 colnames(xTest)[1] <- "(Intercept)"
 xTest <- as.matrix(xTest)
 
+######
+# TO DO: change setup so that we're only using the reduced model.
+######
+
 # we then extract the fitted "lambda.1se" coefficient
 nBeta <- coef(cv.lasso, s="lambda.1se")
 
 # we then perform the class prediction:
 testPredictions <- ifelse(xTest %*% nBeta > 0, 1, 0)
-#rownames(testPredictions) <- rownames(xTest)
-#predict(cv.lasso, xTest, s="lambda.1se", type="class") # says 
 
 # confusion matrix
 tbl <- table(diagTest, testPredictions)
@@ -244,16 +244,12 @@ print(tbl)
     ##        1  1 48
 
 ``` r
-# I GET COMPLAINT ABOUT X / Y NOT HAVING SAME DIMENSIONS.  SO I'M GOING TO 
-# SUBSET TEST SET TO THOSE VALUES ONLY IN TRAINING SET.
-# FOR MISSING VALUES, I'LL ADD ALL ZEROS (WHICH WAS DONE ORIGINALLY)
-# I STILL NEED TO TEST IDEA OF WHETHER SCALING IS REALLY NEEDED, OR IF GLMNET
-# PERFORMS IT AS IT CLAIMS.  I BELIEVE MY RESULTS CHANGED AFTER SCALING, BUT THAT
-# COULD JUST BE THE SCALE OF THE COEFFICIENTS.
+# I had difficulty getting the 'predict()' function to work on this model
+# Many people online say the same thing, as well as predict's own error
+# message.  So I simply performed matrix multiplication.
 ```
 
-Visualizing Model on Training Data
-----------------------------------
+### Visualizing Model on Training Data
 
 We're going to visualize the reduced training dataset using only the non-zero coefficients from the Lasso model.
 
