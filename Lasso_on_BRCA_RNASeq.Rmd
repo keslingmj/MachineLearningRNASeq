@@ -6,7 +6,8 @@ output: rmarkdown::github_document # html_document
 ---
 
 ```{r setup, include=FALSE}
-knitr::opts_chunk$set(echo = TRUE)
+knitr::opts_chunk$set(echo = TRUE, fig.height=6, fig.width=8,
+                      fig.align = "center", dpi=300)
 ```
 
 ### Objective:
@@ -15,7 +16,7 @@ We are going to use the cleaned batch-normalized dataset of RNASeq data from 199
 ### Finish Dataframe Cleanup
 We start by importing the data as a dataframe while taking the transpose, as the genes will act as the predictors.
 We also need to combine the Hugo symbol and Entrez ID rows as the column names and then remove those 2 rows from the dataframe.
-```{r}
+```{r message=FALSE}
 # transpose causes data to be saved as matrix rather than df.  However, that helps manipulation
 # of text in first 2 rows to create meaningful column names for the df.
 wangMatrix <- t(read.table("../data/wangBreastFPKM398_Attrib.txt", header=TRUE)) # rownames okay now
@@ -26,9 +27,9 @@ colnames(wangWithAttrib) <- gsub("-NA", "",(gsub(" ", "", paste0(wangMatrix[1,],
 ```
 
 Next, we'll need to decide which sample attributes to use.  As the only consistent attribute is Age, I'll remove all others (perhaps we could impute the others at another time).  I'll also filter out the 3 male samples. And I'll need to create an output vector.  I'm going to start with *primary_diagnosis*, which will be cleaned up to 0 for healthy and 1 for cancer.  However, the *tumor_stage* describes cancer in greater detail, and I'll save that as an alternative output vector.
-```{r}
-require(dplyr)
-require(tibble)
+```{r message=FALSE}
+require(dplyr);
+require(tibble);
 # convert rownames to column so that they are not lost through filter step
 wangWithAttrib <- wangWithAttrib %>% rownames_to_column('gene')
 
@@ -40,7 +41,7 @@ tumor_stage_archive <- wangWithAttrib$tumor_stage                # archive
 # before removing output variable, I'm going to split wangWithAttrib into a training and test sets
 # first, we'll convert primary_diagnosis into 0's and 1's.
 wangWithAttrib$primary_diagnosis <- ifelse(wangWithAttrib$primary_diagnosis=="healthy", 0, 1)
-require(caTools)
+require(caTools);
 set.seed(233992812)
 idxTrain <- sample.split(wangWithAttrib$primary_diagnosis, SplitRatio = 0.75)
 
@@ -70,7 +71,7 @@ so that larger-unit betas don't dominate smaller betas
 #### OF THE COEFFICIENTS ARE RETURNED ON THE ORIGINAL SCALE, BUT I HAVE NOT RIGOROUSLY
 #### TESTED THIS.
 
-```{r, fig.height=8, fig.width=8}
+```{r, fig.height=8, fig.width=8, message=FALSE}
 # start by converting data-frames to matrices, and create row names:
 wangTrainMatrix <- data.matrix(wangTrain[,2:dim(wangTrain)[2]])
 rownames(wangTrainMatrix) <- wangTrain[,1]
@@ -115,11 +116,11 @@ all(colnames(wangTestNorm) == colnames(wangTrainNorm))
 # Perform Logistic Regression with Lasso Coefficient Shrinkage
 Now that each sample has been centered around zero and scaled by the standard deviation, we can perform logistic regression using the *glmnet* function  
 
-```{r, fig.height=6, fig.width=8}
-require(glmnet)
-require(ggplot2)
+```{r, fig.height=6, fig.width=8, message=FALSE}
+require(glmnet);
+require(ggplot2);
 # install_github("ririzarr/rafalib")
-require(rafalib)
+require(rafalib);
 set.seed(1011)
 xTrain <- as.matrix(wangTrainNorm)
 fit.lasso <- glmnet(xTrain, diagTrain, family="binomial",
@@ -131,7 +132,7 @@ plot(fit.lasso, xvar="lambda", label=TRUE) + abline(v=-2.88) + abline(v=-4)
 ```
 ## Choosing Simplest Model with Near-Minimum Error
 To determine what the simplest model that gives low error is, we'll plot MSE vs log-Lambda
-```{r}
+```{r message=FALSE}
 set.seed(1011)
 cv.lasso <- cv.glmnet(xTrain, diagTrain, family="binomial", alpha=1, 
                       type.measure = "deviance")
@@ -147,15 +148,15 @@ Let's see what the value of lambda is for the 1-SE-from-minimum is:
 print(paste("The best value of lambda is ", cv.lasso$lambda.1se))
 ```
 
-Let's look at the coefficient values for the selected model:
+Let's look at the coefficient values for the selected model:  
 ```{r}
 coefs <- data.frame(as.matrix(coef(fit.lasso, s=cv.lasso$lambda.1se)))
 coefs <- cbind(rownames(coefs), coefs) %>% filter(X1!=0) %>% arrange(X1)
 print(coefs)
 ```
 # Predictions on Test Data
-Now that we've identified a Lasso-shrinked model, we'll see how well the model performs on the test data that were not involved in model training.
-```{r}
+Now that we've identified a Lasso-shrinked model, we'll see how well the model performs on the test data that were not involved in model training.  
+```{r message=FALSE}
 # first, we create a matrix with intercept term derived from wangTestNorm
 #I'll predict on the TEST data, using the s = "lambda.1se" option
 xTest <- cbind(1, wangTestNorm)
@@ -182,16 +183,16 @@ print(tbl)
 # COULD JUST BE THE SCALE OF THE COEFFICIENTS.
 
 ```
-```{r}
+```{r, include=FALSE}
 print(paste0("The model is yielding great results, with just ", tbl[2,1]," false positives and ", tbl[1,2], " no false negatives out of ", length(diagTest), " test predictions."))
 ```
-```{r}
+```{r, include=FALSE}
 print(paste0("This yields a sensitivity of ", tbl[2,2]/sum(tbl[,2]), " and a specificity of ", round(tbl[1,1]/sum(tbl[,1]),2), "."))
 ```
 ## Visualizing Model on Training Data
 We're going to visualize the reduced training dataset using only the non-zero coefficients from the Lasso model.  
 
-```{r}
+```{r message=FALSE}
 # start by reducing training dataset
 coefs <- data.frame(as.matrix(nBeta)) 
 coefs <- cbind(rownames(coefs), coefs) %>% filter(X1!=0) 
@@ -208,8 +209,9 @@ ggplot(tsne_plot_reduced) +
    geom_point(aes(x=x, y=y, color=col)) + 
    ggtitle("t-SNE Plot of Training Data Using Only Non-Zero Lasso Coefficients")
 ```
+  
 Now let's try the t-SNE Plot of the non-reduced Training Dataset:  
-```{r}
+```{r message=FALSE}
 #require(devtools)
 #install_github("ropensci/plotly")
 require(plotly);
@@ -224,7 +226,7 @@ ggplot(tsne_plot_full) +
 #ggplotly(g)  # better if sample named appeared in mouse-over
 ```
 # Using t-SNE to separate out genes in full dataset
-```{r}
+```{r message=FALSE}
 require(Rtsne);
 require(ggplot2);
 require(RColorBrewer);
@@ -271,7 +273,7 @@ One possibility that the Cancer / Healthy Breast samples segregate so cleanly in
 All GTEx samples are of healthy subjects.  Luckily, TCGA has a good numbered of healthy and cancer samples.  That should enable us to see if there is a major TCGA vs GTEx batch effect while looking at the healthy samples.  
 
 We're going to do this using the full set of predictors.  
-```{r}
+```{r message=FALSE}
 # we start by creating a vector of the 296 training examples according to their class
 classes3 <- subset(wangWithAttrib, idxTrain==TRUE)
 sampleNames <- classes3$gene           # actually the sample name and not gene name
@@ -308,7 +310,7 @@ The above plots have looked at
 
 ## Functional grouping of genes
 Though we have a small grouping of gene predictors (26), and most of them are correlated with healthy tissue and not breast cancer, I'd like to see if there's enrichments with Panther / GO classes
-```{r}
+```{r message=FALSE}
 # grab coef gene names and just use GeneID:
 geneIDs <- gsub("-[A-Z,0-9]+", "", as.character(coefs$`rownames(coefs)`))
 geneIDs <- geneIDs[2:length(geneIDs)]

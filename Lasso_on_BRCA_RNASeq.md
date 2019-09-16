@@ -24,29 +24,8 @@ colnames(wangWithAttrib) <- gsub("-NA", "",(gsub(" ", "", paste0(wangMatrix[1,],
 Next, we'll need to decide which sample attributes to use. As the only consistent attribute is Age, I'll remove all others (perhaps we could impute the others at another time). I'll also filter out the 3 male samples. And I'll need to create an output vector. I'm going to start with *primary\_diagnosis*, which will be cleaned up to 0 for healthy and 1 for cancer. However, the *tumor\_stage* describes cancer in greater detail, and I'll save that as an alternative output vector.
 
 ``` r
-require(dplyr)
-```
-
-    ## Loading required package: dplyr
-
-    ## 
-    ## Attaching package: 'dplyr'
-
-    ## The following objects are masked from 'package:stats':
-    ## 
-    ##     filter, lag
-
-    ## The following objects are masked from 'package:base':
-    ## 
-    ##     intersect, setdiff, setequal, union
-
-``` r
-require(tibble)
-```
-
-    ## Loading required package: tibble
-
-``` r
+require(dplyr);
+require(tibble);
 # convert rownames to column so that they are not lost through filter step
 wangWithAttrib <- wangWithAttrib %>% rownames_to_column('gene')
 
@@ -58,12 +37,7 @@ tumor_stage_archive <- wangWithAttrib$tumor_stage                # archive
 # before removing output variable, I'm going to split wangWithAttrib into a training and test sets
 # first, we'll convert primary_diagnosis into 0's and 1's.
 wangWithAttrib$primary_diagnosis <- ifelse(wangWithAttrib$primary_diagnosis=="healthy", 0, 1)
-require(caTools)
-```
-
-    ## Loading required package: caTools
-
-``` r
+require(caTools);
 set.seed(233992812)
 idxTrain <- sample.split(wangWithAttrib$primary_diagnosis, SplitRatio = 0.75)
 
@@ -154,31 +128,11 @@ Perform Logistic Regression with Lasso Coefficient Shrinkage
 Now that each sample has been centered around zero and scaled by the standard deviation, we can perform logistic regression using the *glmnet* function
 
 ``` r
-require(glmnet)
-```
-
-    ## Loading required package: glmnet
-
-    ## Loading required package: Matrix
-
-    ## Loading required package: foreach
-
-    ## Loaded glmnet 2.0-18
-
-``` r
-require(ggplot2)
-```
-
-    ## Loading required package: ggplot2
-
-``` r
+require(glmnet);
+require(ggplot2);
 # install_github("ririzarr/rafalib")
-require(rafalib)
-```
-
-    ## Loading required package: rafalib
-
-``` r
+require(rafalib);
+set.seed(1011)
 xTrain <- as.matrix(wangTrainNorm)
 fit.lasso <- glmnet(xTrain, diagTrain, family="binomial",
                     alpha = 1)   # 'binomial' needed for logistic regression
@@ -188,12 +142,12 @@ plot(fit.lasso, xvar="dev", label=TRUE)
 plot(fit.lasso, xvar="lambda", label=TRUE) + abline(v=-2.88) + abline(v=-4)
 ```
 
-![](Lasso_on_BRCA_RNASeq_files/figure-markdown_github/unnamed-chunk-4-1.png)
+<img src="Lasso_on_BRCA_RNASeq_files/figure-markdown_github/unnamed-chunk-4-1.png" style="display: block; margin: auto;" />
 
     ## integer(0)
 
-Error
------
+Choosing Simplest Model with Near-Minimum Error
+-----------------------------------------------
 
 To determine what the simplest model that gives low error is, we'll plot MSE vs log-Lambda
 
@@ -206,7 +160,7 @@ cv.lasso <- cv.glmnet(xTrain, diagTrain, family="binomial", alpha=1,
 plot(cv.lasso)
 ```
 
-![](Lasso_on_BRCA_RNASeq_files/figure-markdown_github/unnamed-chunk-5-1.png)
+<img src="Lasso_on_BRCA_RNASeq_files/figure-markdown_github/unnamed-chunk-5-1.png" style="display: block; margin: auto;" />
 
 We see that about between 25 and 46 genes plus the intercept are needed to get within 1 std deviation of the minimum error. This is a random event, and so varies from run-to-run, even when setting the random seed.
 
@@ -298,18 +252,6 @@ print(tbl)
 # COULD JUST BE THE SCALE OF THE COEFFICIENTS.
 ```
 
-``` r
-print(paste0("The model is yielding great results, with just ", tbl[2,1]," false positives and ", tbl[1,2], " no false negatives out of ", length(diagTest), " test predictions."))
-```
-
-    ## [1] "The model is yielding great results, with just 1 false positives and 0 no false negatives out of 99 test predictions."
-
-``` r
-print(paste0("This yields a sensitivity of ", tbl[2,2]/sum(tbl[,2]), " and a specificity of ", round(tbl[1,1]/sum(tbl[,1]),2), "."))
-```
-
-    ## [1] "This yields a sensitivity of 1 and a specificity of 0.98."
-
 Visualizing Model on Training Data
 ----------------------------------
 
@@ -322,13 +264,8 @@ coefs <- cbind(rownames(coefs), coefs) %>% filter(X1!=0)
 xTrainReduced <- xTrain[,coefs$`rownames(coefs)`]   # (matrix)
 
 # now create the t-SNE plot
-require(Rtsne)
-```
-
-    ## Loading required package: Rtsne
-
-``` r
-require(ggplot2)
+require(Rtsne);
+require(ggplot2);
 set.seed(31234)
 tSNEout_reduced <- Rtsne(xTrainReduced)
 tsne_plot_reduced <- data.frame(x=tSNEout_reduced$Y[,1], y = tSNEout_reduced$Y[,2],
@@ -338,34 +275,16 @@ ggplot(tsne_plot_reduced) +
    ggtitle("t-SNE Plot of Training Data Using Only Non-Zero Lasso Coefficients")
 ```
 
-![](Lasso_on_BRCA_RNASeq_files/figure-markdown_github/unnamed-chunk-11-1.png) Now let's try the t-SNE Plot of the non-reduced Training Dataset:
+<img src="Lasso_on_BRCA_RNASeq_files/figure-markdown_github/unnamed-chunk-11-1.png" style="display: block; margin: auto;" />
+
+Now let's try the t-SNE Plot of the non-reduced Training Dataset:
 
 ``` r
 #require(devtools)
 #install_github("ropensci/plotly")
-require(plotly)
-```
-
-    ## Loading required package: plotly
-
-    ## 
-    ## Attaching package: 'plotly'
-
-    ## The following object is masked from 'package:ggplot2':
-    ## 
-    ##     last_plot
-
-    ## The following object is masked from 'package:stats':
-    ## 
-    ##     filter
-
-    ## The following object is masked from 'package:graphics':
-    ## 
-    ##     layout
-
-``` r
-require(Rtsne)
-require(ggplot2)
+require(plotly);
+require(Rtsne);
+require(ggplot2);
 set.seed(31234)
 tSNEout_full <- Rtsne(xTrain, dims=2)
 tsne_plot_full <- data.frame(x=tSNEout_full$Y[,1], y = tSNEout_full$Y[,2], col=diagTrain)
@@ -374,7 +293,7 @@ ggplot(tsne_plot_full) +
    ggtitle("t-SNE Plot of Training Data Using All Predictors")
 ```
 
-![](Lasso_on_BRCA_RNASeq_files/figure-markdown_github/unnamed-chunk-12-1.png)
+<img src="Lasso_on_BRCA_RNASeq_files/figure-markdown_github/unnamed-chunk-12-1.png" style="display: block; margin: auto;" />
 
 ``` r
 #ggplotly(g)  # better if sample named appeared in mouse-over
@@ -384,14 +303,9 @@ Using t-SNE to separate out genes in full dataset
 =================================================
 
 ``` r
-require(Rtsne)
-require(ggplot2)
-require(RColorBrewer)
-```
-
-    ## Loading required package: RColorBrewer
-
-``` r
+require(Rtsne);
+require(ggplot2);
+require(RColorBrewer);
 palette <- c("#000000", "#56B4E9")
 spctrlPal <- c("#9E0142", "#D53E4F", "#F46D43", "#FDAE61", "#FEE08B", "#FFFFBF", "#E6F598", "#ABDDA4", "#66C2A5","#3288BD", "#5E4FA2")
 # I need a vector for coloring genes that were important in Lasso model
@@ -426,7 +340,7 @@ ggplot(tsne_plot_genes) +
                       labels = c("Healthy", "None", "Cancer"))
 ```
 
-![](Lasso_on_BRCA_RNASeq_files/figure-markdown_github/unnamed-chunk-13-1.png)
+<img src="Lasso_on_BRCA_RNASeq_files/figure-markdown_github/unnamed-chunk-13-1.png" style="display: block; margin: auto;" />
 
 ``` r
 #ggplotly(g)
@@ -435,12 +349,12 @@ ggplot(tsne_plot_genes) +
 We can see that there is a clean separation between genes whose expression is positively correlated with cancer (blue) and genes whose expression is negatively correlated with cancer (red). This isn't necessarily surprising, as these are the genes that give the greatest predictive value for separating the disease state (cancer / healthy).
 
 Ruling Out Arifacts
-===================
+-------------------
 
 One possibility that the Cancer / Healthy Breast samples segregate so cleanly in the t-SNE graph while using all data is that there could be a batch effect between these samples that isn't the "cancer"/"healthy" state, but is something else, such as repository/project (TCGA/GTEx), date, or other effect.
 
 A. Plotting TCGA / GTEx Batch Effects
-=====================================
+-------------------------------------
 
 All GTEx samples are of healthy subjects. Luckily, TCGA has a good numbered of healthy and cancer samples. That should enable us to see if there is a major TCGA vs GTEx batch effect while looking at the healthy samples.
 
@@ -473,7 +387,7 @@ ggplot(tsne_plot_3class) +
                       labels = c("Healthy-GTEX", "Healthy-TCGA", "Cancer-TCGA"))
 ```
 
-![](Lasso_on_BRCA_RNASeq_files/figure-markdown_github/unnamed-chunk-14-1.png) Overall, healthy/cancer still separate much better in the data than do healthy-TCGA and healthy-GTEX. However, one can see a smaller effect in that the healthy-TCGA tend to be more tightly clustered within the healthy group than do healthy-GTEX.
+<img src="Lasso_on_BRCA_RNASeq_files/figure-markdown_github/unnamed-chunk-14-1.png" style="display: block; margin: auto;" /> Overall, healthy/cancer still separate much better in the data than do healthy-TCGA and healthy-GTEX. However, one can see a smaller effect in that the healthy-TCGA tend to be more tightly clustered within the healthy group than do healthy-GTEX.
 
 Ruling Out Batch Effect of Date
 -------------------------------
