@@ -88,13 +88,16 @@ wangTrainMatrix <- wangTrainMatrix[,-zeroSD]
 cSTD <- cSTD[-zeroSD]
 cMean <- apply(wangTrainMatrix, 2, mean)
 # centering and scaling data:
+#################################### TEST
+wangTrainNorm2 <- t(apply(wangTrainMatrix, 1, function(x){x / cSTD}))
 wangTrainNorm <- t(apply(wangTrainMatrix, 1, function(x){(x - cMean) / cSTD}))
+
 # I don't add an intercept term, as glmnet already takes care of that.
 # Add back 0 columns:
 zeros <- data.frame(matrix(rep(0, length(zeroSD)*dim(wangTrainMatrix)[1]), nrow=dim(wangTrainMatrix)[1]))
 colnames(zeros) <- names(zeroSD)
 wangTrainNorm <- cbind(wangTrainNorm, zeros)
-
+wangTrainNorm2 <- cbind(wangTrainNorm2, zeros)
 
 # now we repeat the process for the test data:
 # I'm going to filter those with SD=0, which will be a different set and we'll see
@@ -104,6 +107,9 @@ zeroSD <- which(cSTD == 0)
 wangTestMatrix <- wangTestMatrix[,-zeroSD]
 cSTD <- cSTD[-zeroSD]
 cMean <- apply(wangTestMatrix, 2, mean)
+
+################################### TEST
+wangTestNorm2 <- t(apply(wangTestMatrix, 1, function(x){x / cSTD}))
 wangTestNorm <- t(apply(wangTestMatrix, 1, function(x){(x - cMean) / cSTD}))
 # BELOW IT'S BECOME CLEAR THAT I NEED TO ADD BACK ALL-ZERO DATA FOR COLUMNS
 # IN WANG TRAIN THAT AREN'T IN WANG TEST
@@ -111,7 +117,10 @@ zeros <- data.frame(matrix(rep(0, length(zeroSD)*dim(wangTestMatrix)[1]),
                            nrow=dim(wangTestMatrix)[1]))
 colnames(zeros) <- names(zeroSD)
 wangTestNorm <- cbind(wangTestNorm, zeros)
-wangTestNorm <- wangTestNorm[,colnames(wangTrainNorm)]
+wangTestNorm2 <- cbind(wangTestNorm2, zeros)
+wangTestNorm2 <- wangTestNorm2[,colnames(wangTrainNorm)]
+wangTestNorm <- wangTestNorm[,colnames(wangTrainNorm)]  # reorder columns
+# for consistency with wangTrainNorm
 all(colnames(wangTestNorm) == colnames(wangTrainNorm))
 ```
 ### Perform Logistic Regression with Lasso Coefficient Shrinkage
@@ -123,6 +132,22 @@ require(ggplot2);
 # install_github("ririzarr/rafalib")
 require(rafalib);
 set.seed(1011)
+
+###############
+### TESTING LASSO ON UN-NORMALIZED DATA
+
+fit.NONORM.lasso <- glmnet(wangTrainMatrix, diagTrain, family="binomial",
+                           alpha = 1)
+plot(fit.NONORM.lasso, xvar="lambda", label=TRUE)
+cv.NONORM.lasso <- cv.glmnet(wangTrainMatrix, diagTrain, family="binomial", alpha=1, 
+                      type.measure = "deviance")
+plot(cv.NONORM.lasso)
+coefsNN <- data.frame(as.matrix(coef(fit.NONORM.lasso, s=cv.NONORM.lasso$lambda.1se)))
+coefsNN <- cbind(rownames(coefsNN), coefsNN) %>% filter(X1!=0) %>% arrange(X1)
+cNNnames <- coefsNN$`rownames(coefsNN)` %>% sort()
+
+
+###############
 xTrain <- as.matrix(wangTrainNorm)
 fit.lasso <- glmnet(xTrain, diagTrain, family="binomial",
                     alpha = 1)   # 'binomial' needed for logistic regression
@@ -130,6 +155,13 @@ fit.lasso <- glmnet(xTrain, diagTrain, family="binomial",
 mypar(1,2)   # doesn't work in RMD, but does on R command line
 plot(fit.lasso, xvar="dev", label=TRUE)
 plot(fit.lasso, xvar="lambda", label=TRUE) + abline(v=-3.77)
+
+###########
+xTrain2 <- as.matrix(wangTrainNorm2)
+fit.lasso2 <- glmnet(xTrain2, diagTrain, family="binomial",
+                    alpha = 1)  # no subtraction of mean
+
+
 ```
 ### Choosing Simplest Model with Near-Minimum Error
 To determine what the simplest model that gives low error is, we'll plot MSE vs log-Lambda
@@ -139,6 +171,13 @@ cv.lasso <- cv.glmnet(xTrain, diagTrain, family="binomial", alpha=1,
                       type.measure = "deviance")
                       # misclassification error use type.measure = "class"
                       # misclassif. gives much smaller model (8 predictors)
+######
+cv.lasso2 <- cv.glmnet(xTrain2, diagTrain, family="binomial", alpha=1,
+                       type.measure = "deviance")
+all(coef(cv.lasso) == coef(cv.lasso2))   # not identical
+which(coef(cv.lasso)!= 0) # 37 coefs
+which(coef(cv.lasso2)!= 0) # 28 coefs
+which(coef(cv.lasso2)!= 0) %in% which(coef(cv.lasso)!=0) # almost a subset
 plot(cv.lasso)
 ```
 
@@ -155,7 +194,9 @@ Let's look at the coefficient values for the selected model:
 # (if we substitute "fit.lasso" with "cv.lasso", it yields the identical coefs)
 coefs <- data.frame(as.matrix(coef(fit.lasso, s=cv.lasso$lambda.1se)))
 coefs <- cbind(rownames(coefs), coefs) %>% filter(X1!=0) %>% arrange(X1)
-print(coefs)
+#print(coefs)
+cNames <- coefs$`rownames(coefs)` %>% sort()
+as.character(cNames) == as.character(cNNnames)
 ```
 ### Predictions on Test Data
 Now that we've identified a Lasso-shrinked model, we'll see how well the model performs on the test data that were not involved in model training.  
