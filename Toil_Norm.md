@@ -177,4 +177,63 @@ ggplot(tsne_plot_toil) +
 
 ![](Toil_Norm_files/figure-markdown_github/unnamed-chunk-9-1.png) The t-SNE plot shows significant batch effects between healthy TCGA samples and healthy GTEX samples. \#\#\# Logistic Regression with Lasso Regularizer on Toil Data I'd like to compare the performance on this breast cancer dataset in the absence of batch normalization (ComBat).
 
-##### (in progress)
+``` r
+require(glmnet);
+```
+
+    ## Loading required package: glmnet
+
+    ## Loading required package: Matrix
+
+    ## Loading required package: foreach
+
+    ## Loaded glmnet 2.0-18
+
+``` r
+require(ggplot2);
+# install_github("ririzarr/rafalib")
+require(rafalib);
+```
+
+    ## Loading required package: rafalib
+
+``` r
+dim(toilSubNatural)
+```
+
+    ## [1]   382 31995
+
+``` r
+##############
+### Split toil matrix into training and test sets:
+require(caTools)
+```
+
+    ## Loading required package: caTools
+
+``` r
+set.seed(233992812)
+outcome <- c(rep(0, 185), rep(1, 197))
+# bind outcome variable on data frame for even, random partitioning
+toilSubNatural <- data.frame(cbind(toilSubNatural, outcome))
+idxTrain <- sample.split(toilSubNatural$outcome, SplitRatio = 0.75)
+toilSubNatTrain <- subset(toilSubNatural, idxTrain==TRUE)
+outcomeTrain <- subset(toilSubNatural$outcome, idxTrain==TRUE)
+toilSubNatTest <- subset(toilSubNatural, idxTrain==FALSE)
+outcomeTest <- subset(toilSubNatural$outcome, idxTrain==FALSE)
+# remove outcome variable:
+toilSubNatTrain <- toilSubNatTrain %>% select(-outcome)
+toilSubNatTest <- toilSubNatTest %>% select(-outcome)
+# convert back to matrices:
+toilSubNatTrain <- as.matrix(toilSubNatTrain)
+toilSubNatTest <- as.matrix(toilSubNatTest)
+
+###############
+### Fitting Logistic Regression with Lasso Regularizer on toilSubNatural matrix
+set.seed(1011)
+fitToil.lasso <- glmnet(toilSubNatTrain, outcomeTrain, family="binomial",
+                           alpha = 1)
+plot(fitToil.lasso, xvar="lambda", label=TRUE)
+```
+
+![](Toil_Norm_files/figure-markdown_github/unnamed-chunk-10-1.png) \#\#\#\#\# (in progress)
