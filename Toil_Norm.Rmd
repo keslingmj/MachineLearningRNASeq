@@ -135,11 +135,12 @@ colReOrder <- grep("^GTEX", colnames(toilSubset))
 colReOrder <- c(colReOrder, grep("11$", colnames(toilSubset)))
 colReOrder <- c(colReOrder, grep("01$", colnames(toilSubset)))
 tmp <- toilSubset[,colReOrder]
-rownames(tmp) <- paste0(toilSubset$gene, "-", toilSubset$rowname)
+rownames(tmp) <- paste0(toilSubset$gene, "-", toilSubset$rowname) #complicated
+# but needed to avoid duplicates
 toilSubset <- tmp
 rm(tmp)
 ```
-Next, I'll remove all genes if >75% of it's sample have XXX
+Next, I'll remove every gene if >75% of it's samples have XXX
 ```{r}
 require(ggplot2)
 # Let's start with distribution of median counts for each gene.
@@ -227,9 +228,21 @@ plot(fitToil.lasso, xvar="lambda", label=TRUE)
 ```
 It's clear that scaling the predictors before Lasso enables many more to be used.  It would be interesting to see how many of these genes have a low level of expression (and therefore might be noisy data).
 ```{r}
-fitToil.lasso
+#fitToil.lasso
+set.seed(1011)
+cv.Toil.lasso <- cv.glmnet(toilTrainScaled, outcomeTrain, family="binomial", alpha=1) 
+                      #type.measure = "deviance")
+plot(cv.Toil.lasso)
 ```
+```{r}
+toilTest <- cbind(1, toilTestScaled)
+colnames(toilTest)[1] <- "(Intercept)"
+toilTest <- as.matrix(toilTest)
 
+coefsToil <- coef(fitToil.lasso, s=cv.Toil.lasso$lambda.1se)
+testPredictions_Toil <- ifelse(toilTest %*% coefsToil > 0, 1, 0)
+table(outcomeTest, testPredictions_Toil)
+```
 ##### (in progress)
 
 

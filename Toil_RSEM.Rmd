@@ -1,0 +1,338 @@
+---
+title: "Toil_Selection"
+author: "Michael Kesling"
+date: "9/27/2019"
+output: rmarkdown::github_document 
+---
+This particular document takes the Toil-normalized TCGA and GTEx breast cancer samples and runs machine learning algorithms on them.  Importantly, the only sample-to-sample normalization performed in quantile-quantile normalization relative to a single reference sample.  No batch normalization is performed at this point,  as it's the simplest scenario for test samples processed in the clinic.
+
+The data were downloaded from the UCSC server at:
+https://xenabrowser.net/datapages/?cohort=TCGA%20TARGET%20GTEx&removeHub=https%3A%2F%2Fxena.treehouse.gi.ucsc.edu%3A443
+There are 2 relevant *gene expression RNAseq* datasets there.  *RSEM expected_count (n=19,109)* which is used in this document, and *RSEM expected_count (DESeq2 standardized) (n=19,039)* which was used in the *Toil_Norm.Rmd* file.
+
+
+
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+require(matrixStats)
+```
+### Subsetting Toil Data
+
+As I'm only looking at just under 400 Breast Cancer samples that were previously selected, I'll subset the very large Toil RSEM file (19k samples).
+
+The samples I'm interested in are located in a file called wangBreastFPKM398_Attrib.txt, created earlier.  While this file contains FPKM counts, I'm only pulling out the sample names from it.
+
+Additionally, I'm going to convert the Ensemble IDs to the more readable HUGO gene IDs.
+
+I start by grabbing the Wang sample names, the Toil sample names, and finding the overlap between the two.
+
+```{r}
+require(dplyr)
+require(magrittr)
+wangMatrix <- read.table("/Users/mjk/Desktop/Tresorit_iOS/projects/RNA-Seq/data/wangBreastFPKM398_Attrib.txt", header=TRUE) # rownames okay now
+wangSelectedSamples <- colnames(wangMatrix)
+wangTCGAsamples <- wangSelectedSamples[grep("^TCGA", wangSelectedSamples)] %>%
+   {gsub("\\.", "-", .)} %>% 
+   {gsub("([TCGA]-[^-]+[-][^-]+[-][^-]+)[-].*", "\\1", .)} %>% 
+   {gsub("[AB]$", "", .)}
+
+wangGTEXsamples <- wangSelectedSamples[grep("^GTEX", wangSelectedSamples)] %>%
+   {gsub("\\.", "-", .)}
+
+wangSamples <- c(wangGTEXsamples, wangTCGAsamples)
+
+
+toilSampleNames <- read.table("/Users/mjk/RNA-Seq_2019/TOIL_Data/TcgaTargetGtex_gene_expected_count", sep="\t", nrows = 1, stringsAsFactors = FALSE)
+#toilSampleNames <- toilSampleNames[1,2:length(toilSampleNames)]
+
+
+multiGrep <- function(var1, var2){
+   return(grep(var1, var2))
+}
+
+wangSampleMapping <- sapply(wangSamples, multiGrep, var2=toilSampleNames)
+
+# missing samples in TOIL set:
+missingSamples <- wangSampleMapping[grep("integer", wangSampleMapping)] #15 missing
+wangSamplesPresent <- setdiff(wangSamples, names(missingSamples))
+```
+15 of the Wang samples are missing in the Toil dataset.  I'll therefore be working with 380 samples after the 3 male samples are subtracted out.
+
+
+Next, I read in the toil dataset (8GB+) and subset it by the Wang sample labels.
+```{r}
+# code only run the first time:
+while(FALSE){
+   toilData <- read.table("/Users/mjk/RNA-Seq_2019/TOIL_Data/TcgaTargetGtex_gene_expected_count", header=TRUE, stringsAsFactors = FALSE)
+
+   
+   # QA:
+   sum(gsub("-", "\\.", toilSampleNames) %in% colnames(toilData)) == length(toilSampleNames)
+   
+   
+   relevantCols <- unique(sort(c(1,unlist(wangSampleMapping[grep("integer", wangSampleMapping, invert=TRUE)], use.names = FALSE)))) #includes capturing gene names
+   
+   write.table(paste(relevantCols, collapse=","), "wangSamplesRSEM.uniq", sep=",",
+               row.names = FALSE, col.names = FALSE)
+   
+   
+   toilSubset <- toilData[, relevantCols]              # subset data
+   
+   #check that all cols got selected:
+   all(gsub("-", ".", wangSamplesPresent) %in% colnames(toilSubset))
+   
+   write.table(toilSubset, "toilSubsetRSEM382.txt", sep="\t", row.names=FALSE)
+   rm(toilData)
+}
+```
+
+```{r}
+# just read already-subsetted dataframe
+toilSubset <- read.table("toilSubsetRSEM382.txt", sep="\t", header=TRUE)
+rownames(toilSubset) <- toilSubset$sample
+```
+Next, I add gene names to the dataframe based on the Ensembl ID:
+```{r}
+require(dplyr)
+toilGeneAnnot <- read.table("~/RNA-Seq_2019/TOIL_Data/gencode.v23.annotation.gene.probemap",
+                            header=TRUE)
+id2gene <- setNames(as.list(as.character(toilGeneAnnot$gene)),
+                    toilGeneAnnot$id)
+toilSubset <- toilSubset %>% tibble::rownames_to_column()
+toilSubset <- toilSubset %>% mutate(gene=id2gene[toilSubset$rowname])
+```
+Next, I reorder the toilSubset data frame to group "like" samples and make the gene name the row name.
+```{r}
+colReOrder <- grep("^GTEX", colnames(toilSubset))
+colReOrder <- c(colReOrder, grep("11$", colnames(toilSubset)))
+colReOrder <- c(colReOrder, grep("01$", colnames(toilSubset)))
+tmp <- toilSubset[,colReOrder]
+rownames(tmp) <- paste0(toilSubset$gene, "-", toilSubset$rowname)
+toilSubset <- tmp
+rm(tmp)
+```
+
+### Create Test and Training Sets
+At this point, all we've done is grabbed the Toil RSEM output data and subsetted
+it with the Wang sample lists.  It's still in log2-format.
+
+Next:
+1. break into Test and Train  
+2. perform edgeR normalization with a reference sample to control for depth-of-sequencing effects.  Use same reference for training and (future) test set  
+3.filter out genes (independent if possible)
+4. look at overall structure using t-SNE and PCA
+5. Perform ML
+
+```{r}
+# cleanup toilSubset and transpose it   NOT NEEDED ANYMORE
+#rownames(toilSubset) <- toilSubset$genename
+#toilSubsetWide <- t(toilSubset[,2:dim(toilSubset)[2]])
+
+toilSubsetWide <- t(toilSubset)
+
+require(caTools)
+set.seed(233992812)
+outcome <- c(rep(0, 185), rep(1, 197))  # 0 = healthy, 1 = tumor
+
+# bind outcome variable on data frame for even, random partitioning
+toilSubsetWide <- data.frame(cbind(toilSubsetWide, outcome))
+idxTrain <- sample.split(toilSubsetWide$outcome, SplitRatio = 0.75)
+# QA
+sum(idxTrain)/length(idxTrain)  # 75% observations in training set OK
+
+# create training and test predictor sets and outcome vectors:
+toilTrain <- subset(toilSubsetWide, idxTrain==TRUE)
+outcomeTrain <- subset(toilSubsetWide$outcome, idxTrain==TRUE)
+toilTest <- subset(toilSubsetWide, idxTrain==FALSE)
+outcomeTest <- subset(toilSubsetWide$outcome, idxTrain==FALSE)
+
+# remove outcome variable from predictor matrices:
+toilTrain <- toilTrain %>% select(-outcome)
+toilTest <- toilTest %>% select(-outcome)
+# convert back to matrices:
+toilTrain <- as.matrix(toilTrain)
+toilTest <- as.matrix(toilTest)
+```
+### edgeR Sample-to-Sample Normalization
+Next, we select a reference sample within the training set and relative to that reference, we perform edgeR sample-to-sample normalization, one sample at a time.  The methodology can be found in Robinson MD and Oshlack A, "A scaling normalization method for differential expression analysis of RNA-seq data", Genome Biology, 11: R26 (2010).
+```{r}
+pickRefSample <- function(X){              # X is matrix with samples as rows
+                   # representative reference sample selected via edgeR specs
+                   # this script assumes data are logged.
+   Xnat <- (2^X) - 1                       # put in natural--not log--scale
+   N <- apply(Xnat, 1, sum)
+   scaledX <- apply(Xnat, 2, function(x) x / N)
+   thirdQuartiles <- apply(scaledX, 1, function(x) quantile(x)[4])
+   med <- median(thirdQuartiles)
+   print(sort(thirdQuartiles))
+   refSampleName <- names(sort(abs(thirdQuartiles - med))[1])
+   return(list(refSampleName, scaledX))
+}
+
+weightedTrimmedMean <- function(ref, smpl){
+   # ref and smpl are both numeric vectors, and we assume data are on natural
+   # scale
+
+   # calculate log-FC
+}
+
+### 1. remove genes with near-0 expression
+# We know that there are about 9103 genes that are never expressed, but there are
+# over 25000 genes whose 75th quantile-level expression is under 2^(0.2) - 1 = 0.14 counts.
+# We really don't want to deal with those genes in selecting a reference sample, etc.
+
+# sum(apply(toilTrain, 2, function(x) sum(x==0))==dim(toilTrain)[1])  # there are 9103
+# transcripts that are never expressed across the 287 training examples!
+
+hist(apply(toilTrain, 2, function(x) quantile(x)[4]), breaks=100)
+```
+We are going to filter out genes whose 75th quantile across 287 samples is less than 0.14 counts.
+```{r}
+zeroExpGenes <- which(apply(toilTrain, 2, function(x) quantile(x)[4]) < 0.2)
+toilTrainFilter <- toilTrain[,-zeroExpGenes]  # down to 32k transcripts
+
+
+
+### 2. select a reference sample against which other samples will be scaled
+lst <- pickRefSample(toilTrainFilter) # 7X range of 75th quantile with Filtered data
+
+# I'm going to test another idea.  I'm going to filter more genes out and repeat
+# the 75th quantile distribution to see if it helps.
+
+hist(apply(toilTrain, 2, function(x) quantile(x)[4]), breaks=100)
+
+
+
+
+
+refName <- lst[[1]]
+toilTrainScaled <- lst[[2]]
+refSample <- toilTrainScaled[which(rownames(toilTrainScaled) == refName),]
+```
+Next, I'll remove all genes if >75% of it's sample have XXX
+```{r}
+require(ggplot2)
+# Let's start with distribution of median counts for each gene.
+quant75LevelsGenes <- apply(toilSubset, 1, quantile)[4,]
+hist(quant75LevelsGenes, breaks=100)
+```
+Remember that these values are on the log2 scale!  Therefore, genes under log2(exp) = 5 are likely very noisy.  For now, I'm only going to filter out the lowest genes:
+
+```{r}
+print(paste("The maximum log2(Gene 75th quantile) is ", max(quant75LevelsGenes), " and the number of genes whose log2(75th quantile expression-level) is less than 0.2 is ", sum(quant75LevelsGenes < 0.2)))
+
+```
+Gene Filtering, Convert Values to Normal Scale, and transpose Matrix
+```{r}
+# filter genes virtually non-existent:
+toilSubset <- toilSubset %>% tibble::rownames_to_column("genename") %>%  filter(quant75LevelsGenes > 0.2)    # 31995 genes left across 382 samples plus genename column
+# to natural scale and transpose the matrix:
+toilSubNatural <- as.matrix(exp(toilSubset[,2:dim(toilSubset)[2]]) -1)
+rownames(toilSubNatural) <- toilSubset$genename
+toilSubNatural <- t(toilSubNatural)
+
+```
+# t-SNE to view Cancer/Healthy Diagnosis Partitioning
+```{r}
+require(Rtsne);
+require(ggplot2);
+set.seed(31234)
+tSNEout_toilSN <- Rtsne(toilSubNatural, dims=2)
+prognosis <- c(rep(1, 76), rep(2,109), rep(3, 197))       # 1/2 = healthy, 3 = cancer
+tsne_plot_toil <- data.frame(x=tSNEout_toilSN$Y[,1], y = tSNEout_toilSN$Y[,2], col=prognosis)
+colors3pal <- c("#FDAE6B", "#E6550D",  "#56B4E9")
+#tsne_plot_3class <- data.frame(x=tSNEout_full$Y[,1], y = tSNEout_full$Y[,2], col=prognosis)
+ggplot(tsne_plot_toil) + 
+   geom_point(aes(x=x, y=y, color=as.factor(col))) + 
+   ggtitle("t-SNE Plot of Training Data Using All Filtered Predictors of Toil Data") +
+   scale_color_manual(name="Category",
+                      breaks = c("1", "2", "3"),
+                      values = c(colors3pal[1], colors3pal[2], colors3pal[3]),
+                      labels = c("Healthy-GTEX", "Healthy-TCGA", "Cancer-TCGA"))
+```
+The t-SNE plot shows significant batch effects between healthy TCGA samples and healthy GTEX samples.  The Healthy-TCGA don't cluster as well as they did with DESeq2-normalized samples in another document.
+
+### Creating Test and Training Sets
+At this point, there has been no sample-to-sample normalization.  I want to pick a procedure that can be applied to new patients without any bias.  So we're going to use quantile-quantile normalization relative to an "average" sample in the training set.
+
+We start by breaking the data into training and test sets.
+```{r}
+
+```
+### Sample-to-Sample Normalization
+Now that test and training sets have been created, I'll perform quantile-quantile normalization on the training set.  
+*It should be recognized that a gene filtering step has already been preformed but it was done without knowledge of sample type and it was done before separating out the training and test set.*  Any new samples would be quantile-normalized relative to some reference sample and that certain genes would be filtered out that are already pre-defined.
+
+
+```{r}
+hist(log2(toilSubNatTrainPred[1,]))
+
+# Quantile - Quantile Normalization
+require(preprocessCore)
+X_quantile <- normalize.quantiles(Xorig)
+colnames(X_quantile) <- colnames(Xorig)
+rownames(X_quantile) <- rownames(Xorig)
+sampleMediansQuantile <- data.frame(colMedians(X_quantile))
+rownames(sampleMediansQuantile) <- colnames(X_quantile)
+sampleMediansQuantile <- cbind(sampleMediansQuantile, c(rep(0, 148), rep(1, 148)))
+```
+### Logistic Regression with Lasso Regularizer on Toil Data
+I'd like to compare the performance on this breast cancer dataset in the absence of batch normalization (ComBat).
+```{r, fig.height=8, fig.width=8}
+require(glmnet);
+require(ggplot2);
+# install_github("ririzarr/rafalib")
+require(rafalib);
+
+##############
+### Split toil matrix into training and test sets:
+
+# remove outcome variable:
+toilSubNatTrainPred <- toilSubNatTrain %>% select(-outcome)
+toilSubNatTestPred <- toilSubNatTest %>% select(-outcome)
+# convert back to matrices:
+toilSubNatTrainPred <- as.matrix(toilSubNatTrainPred)
+toilSubNatTestPred <- as.matrix(toilSubNatTestPred)
+
+# center and scale the data:
+toilTrainScaled <- scaleData(toilSubNatTrainPred, TRUE, FALSE)
+toilTestScaled <- scaleData(toilSubNatTestPred, TRUE, FALSE)
+
+# QA STDEV and MEAN of each column
+all(abs(apply(toilTrainScaled, 2, mean)) < 0.00001)
+all(abs(apply(toilTestScaled, 2, mean)) < 0.00001)
+all(abs(apply(toilTrainScaled, 2, sd)) < 1.01 & abs(apply(toilTrainScaled, 2, sd)) > 0.99)
+all(abs(apply(toilTestScaled, 2, sd)) < 1.01 & abs(apply(toilTestScaled, 2, sd)) > 0.99)
+###############
+### Fitting Logistic Regression with Lasso Regularizer on toilSubNatural matrix
+set.seed(1011)
+fitToil.lasso <- glmnet(toilTrainScaled, outcomeTrain, family="binomial",
+                           alpha = 1)
+plot(fitToil.lasso, xvar="lambda", label=TRUE)
+
+```
+It's clear that scaling the predictors before Lasso enables many more to be used.  It would be interesting to see how many of these genes have a low level of expression (and therefore might be noisy data).
+```{r}
+#fitToil.lasso
+set.seed(1011)
+cv.Toil.lasso <- cv.glmnet(toilTrainScaled, outcomeTrain, family="binomial", alpha=1) 
+                      #type.measure = "deviance")
+plot(cv.Toil.lasso)
+```
+```{r}
+toilTest <- cbind(1, toilTestScaled)
+colnames(toilTest)[1] <- "(Intercept)"
+toilTest <- as.matrix(toilTest)
+
+coefsToil <- coef(fitToil.lasso, s=cv.Toil.lasso$lambda.1se)
+testPredictions_Toil <- ifelse(toilTest %*% coefsToil > 0, 1, 0)
+table(outcomeTest, testPredictions_Toil)
+```
+##### (in progress)
+
+
+
+
+
+
