@@ -157,25 +157,6 @@ toilTest <- as.matrix(toilTest)
 ### edgeR Sample-to-Sample Normalization
 Next, we select a reference sample within the training set and relative to that reference, we perform edgeR sample-to-sample normalization, one sample at a time.  The methodology can be found in Robinson MD and Oshlack A, "A scaling normalization method for differential expression analysis of RNA-seq data", Genome Biology, 11: R26 (2010).
 ```{r}
-pickRefSample <- function(X){              # X is matrix with samples as rows
-                   # representative reference sample selected via edgeR specs
-                   # this script assumes data are logged.
-   Xnat <- (2^X) - 1                       # put in natural--not log--scale
-   N <- apply(Xnat, 1, sum)
-   scaledX <- apply(Xnat, 2, function(x) x / N)
-   thirdQuartiles <- apply(scaledX, 1, function(x) quantile(x)[4])
-   med <- median(thirdQuartiles)
-   print(sort(thirdQuartiles))
-   refSampleName <- names(sort(abs(thirdQuartiles - med))[1])
-   return(list(refSampleName, scaledX))
-}
-
-weightedTrimmedMean <- function(ref, smpl){
-   # ref and smpl are both numeric vectors, and we assume data are on natural
-   # scale
-
-   # calculate log-FC
-}
 
 ### 1. remove genes with near-0 expression
 # We know that there are about 9103 genes that are never expressed, but there are
@@ -185,30 +166,190 @@ weightedTrimmedMean <- function(ref, smpl){
 # sum(apply(toilTrain, 2, function(x) sum(x==0))==dim(toilTrain)[1])  # there are 9103
 # transcripts that are never expressed across the 287 training examples!
 
-hist(apply(toilTrain, 2, function(x) quantile(x)[4]), breaks=100)
+hist(apply(toilTrain, 1, function(x) quantile(x)[4]))
 ```
-We are going to filter out genes whose 75th quantile across 287 samples is less than 0.14 counts.
+We are going to filter out genes whose 75th quantile across 287 samples is less than 0.14 counts (log2(counts) < 0.2).
 ```{r}
 zeroExpGenes <- which(apply(toilTrain, 2, function(x) quantile(x)[4]) < 0.2)
 toilTrainFilter <- toilTrain[,-zeroExpGenes]  # down to 32k transcripts
+```
+It should be noted that the range of the 75th quantile *across samples* was 2^7-fold when only the genes that were zero in all samples were filtered.  When we filtered genes whose 75th gene-quantile was less than 0.14 (natural scale), the 75th quantile *across samples* range went down to 2^3-fold.
+```{r}
+# Let's look at some scaling stats in the natural scale
+toilTrainNat <- ((2^toilTrain)-1)    # natural scale
+N <- apply(toilTrainNat, 1, sum)
+hist(N)
+sd(N)/mean(N)                        # CV is 0.33 287 training samples. range=5.7 fold
+quart3 <- apply(toilTrainNat, 1, function(x) quantile(x)[4])
+sd(quart3)/mean(quart3)              # 0.35 CV of quartiles. range=6.3-fold
+# thusfar, all the data are unfiltered
 
+# next, let's filter only all-0 genes
+allZeros <- which(apply(toilTrainNat, 2, sum)==0)
+ttnNozeros <- toilTrainNat[,-allZeros]
+quart3 <- apply(ttnNozeros, 1, function(x) quantile(x)[4])
+sd(quart3)/mean(quart3)              # still 0.35
 
+# next, let's filter all 3rd quartile < 0.14 counts--filter criterion in log-scale:
+zeroExpGenes <- which(apply(toilTrain, 2, function(x) quantile(x)[4]) < 0.2)
+ttnNoNearzeros <- toilTrainNat[,-zeroExpGenes]
+quart3 <- apply(ttnNoNearzeros, 1, function(x) quantile(x)[4])
+sd(quart3)/mean(quart3)              # CV drops slightly to 0.336
+hist(log2(quart3 + 1))
+```
+Having filtered out ~28k genes whose expression is nil or very, very close to that.  The range stays the same, which is 2.5 on the log scale.  Only subtraction, and not division, is relevant on this scale.  This matrix, called "ttnNoNearzeros" is on the natural scale, has only the 287 training samples, and 32177 genes.  We will stick to these same genes when filtering test data before sample-to-reference normalization.  
+
+### Selecting a Reference Sample for Sample-to-Sample Normalization
+```{r}
+# first we re-name our filtered matrix:
+toilTrainFilter <- ttnNoNearzeros
+# we remove matrices and lists we no longer need:
+rm(toilGeneAnnot)
+rm(toilSampleNames)
+rm(zeroExpGenes)
+rm(ttnNozeros)
+rm(allZeros)
+rm(quart3)
+rm(ttnNoNearzeros)
+
+### Define Functions
+pickRefSample <- function(X, logged=FALSE){  # X is matrix with samples as rows
+                   # representative reference sample selected via edgeR specs
+                   # this script assumes data are on natural scale.
+   Xnat <- if(logged==TRUE) ((2^X)-1) else X  # put in natural scale
+   N <- apply(Xnat, 1, sum)
+   scaledX <- apply(Xnat, 2, function(x) x / N)
+   thirdQuartiles <- apply(scaledX, 1, function(x) quantile(x)[4])
+   med <- median(thirdQuartiles)
+   refSampleName <- names(sort(abs(thirdQuartiles - med))[1])
+   return(list(refSampleName, scaledX))
+}
+
+weightedTrimmedMean <- function(refSample, testSample){
+   # ref and smpl are both numeric vectors, and we assume data are on natural
+   # scale.  The values are represented as fraction of total counts.  So
+   # sum(ref) = sum(smpl) = 1
+   # calculate log-FC.  All #'s are very small < 0.01, so not adding "1"
+   testSampleName <- rownames(toilTrainScaled)[1]
+
+   logFC <- weightedTrimmedMean(refSample, testSample)
+   # for reference, 2227 genes log(FC)=-Inf and 2214 had log(FC)=Inf, which is about
+   # 10% in each direction.
+   
+   # first filter off any genes that are zero in refSample or testSample
+   # # but for Yg• ≠ 0.
+   refZeros <- which(refSample==0)
+   smpZeros <- which(testSample==0)
+   unionZeros <- sort(unique(append(refZeros, smpZeros)))
+   refSampleFilt <- refSample[-unionZeros]
+   testSampleFilt <- testSample[-unionZeros]
+   
+   refLog <- log2(refSampleFilt)
+   smpLog <- log2(testSampleFilt)
+   M <- refLog - smpLog           # ref sample in numerator
+   A <- 0.5 * (refLog + smpLog)   
+   
+   # grab middle 40% of M and middle 90% of A
+   M_limits <- quantile(M, probs = seq(0,1,0.05))[c(7,15)]  # diagnostic
+   A_limits <- quantile(A, probs = seq(0,1,0.05))[c(2,20)]  # diagnostic
+   
+   A_middle90 <- names(A[(A >= A_limits[1] & A <= A_limits[2]) == TRUE])
+   M_middle40 <- names(M[(M >= M_limits[1] & M <= M_limits[2]) == TRUE])
+   
+   # grab genes names in intersection of A_middle90 and M_middle40
+   genes4norm <- dplyr::intersect(A_middle90, M_middle40)
+   M_normGenes <- names(M[genes4norm])
+   #########
+   # Nk and Nr must be relative to the 9131 genes that remain.
+   # further, Ygk and Ygr need to be recalculated relative to that value
+   #########
+   # grab 2 samples on Norm Genes on Natural Scale:
+   refSelectNat <- toilTrainFilter[refName,M_normGenes]
+   testSelectNat <- toilTrainFilter[testSampleName,M_normGenes]
+   
+   # subset M for normalization genes
+   M_norm <- M[M_normGenes]
+   
+   # calculate Nk and Nr
+   Nr <- sum(refSelectNat)
+   Nk <- sum(testSelectNat)
+   
+   # calculate weights
+   RefDiff <- Nr - refSelectNat
+   TestDiff <- Nk - testSelectNat
+   RefProd <- Nr * refSelectNat
+   TestProd <- Nk * testSelectNat
+   weights <- (RefDiff/RefProd) + (TestDiff/TestProd)
+   
+   # calculate Trimmed Mean scaling factor
+   TMM_log2 <- sum(M_norm * weights)/sum(weights)
+   TMM <- 2^TMM_log2
+}
 
 ### 2. select a reference sample against which other samples will be scaled
-lst <- pickRefSample(toilTrainFilter) # 7X range of 75th quantile with Filtered data
-
-# I'm going to test another idea.  I'm going to filter more genes out and repeat
-# the 75th quantile distribution to see if it helps.
-
-hist(apply(toilTrain, 2, function(x) quantile(x)[4]), breaks=100)
-
-
-
-
-
+lst <- pickRefSample(toilTrainFilter, logged=FALSE) 
 refName <- lst[[1]]
 toilTrainScaled <- lst[[2]]
 refSample <- toilTrainScaled[which(rownames(toilTrainScaled) == refName),]
+
+testSample <- toilTrainScaled[1,]
+testSampleName <- rownames(toilTrainScaled)[1]
+
+logFC <- weightedTrimmedMean(refSample, testSample)
+# for reference, 2227 genes log(FC)=-Inf and 2214 had log(FC)=Inf, which is about
+# 10% in each direction.
+
+# first filter off any genes that are zero in refSample or testSample
+# # but for Yg• ≠ 0.
+refZeros <- which(refSample==0)
+smpZeros <- which(testSample==0)
+unionZeros <- sort(unique(append(refZeros, smpZeros)))
+refSampleFilt <- refSample[-unionZeros]
+testSampleFilt <- testSample[-unionZeros]
+
+refLog <- log2(refSampleFilt)
+smpLog <- log2(testSampleFilt)
+M <- refLog - smpLog           # ref sample in numerator
+A <- 0.5 * (refLog + smpLog)   
+
+# grab middle 40% of M and middle 90% of A
+M_limits <- quantile(M, probs = seq(0,1,0.05))[c(7,15)]  # diagnostic
+A_limits <- quantile(A, probs = seq(0,1,0.05))[c(2,20)]  # diagnostic
+
+A_middle90 <- names(A[(A >= A_limits[1] & A <= A_limits[2]) == TRUE])
+M_middle40 <- names(M[(M >= M_limits[1] & M <= M_limits[2]) == TRUE])
+
+# grab genes names in intersection of A_middle90 and M_middle40
+genes4norm <- dplyr::intersect(A_middle90, M_middle40)
+M_normGenes <- names(M[genes4norm])
+#########
+# Nk and Nr must be relative to the 9131 genes that remain.
+# further, Ygk and Ygr need to be recalculated relative to that value
+#########
+# grab 2 samples on Norm Genes on Natural Scale:
+refSelectNat <- toilTrainFilter[refName,M_normGenes]
+testSelectNat <- toilTrainFilter[testSampleName,M_normGenes]
+
+# subset M for normalization genes
+M_norm <- M[M_normGenes]
+
+# calculate Nk and Nr
+Nr <- sum(refSelectNat)
+Nk <- sum(testSelectNat)
+
+# calculate weights
+RefDiff <- Nr - refSelectNat
+TestDiff <- Nk - testSelectNat
+RefProd <- Nr * refSelectNat
+TestProd <- Nk * testSelectNat
+
+weights <- (RefDiff/RefProd) + (TestDiff/TestProd)
+TMM_log2 <- sum(M_norm * weights)/sum(weights)
+TMM <- 2^TMM_log2
+# divide test sample by TMM.
+
+
+
 ```
 Next, I'll remove all genes if >75% of it's sample have XXX
 ```{r}
