@@ -16,6 +16,55 @@ There are 2 relevant *gene expression RNAseq* datasets there.  *RSEM expected_co
 ```{r setup, include=FALSE}
 knitr::opts_chunk$set(echo = TRUE)
 require(matrixStats)
+
+######## FUNCTIONS NOT TO BE PRINTED IN MARKDOWN DOC:
+scaleData <- function(DM, MEAN=TRUE, ROW=FALSE){
+   # this function takes a data matrix, DM, and scales the data by each row's
+   # standard deviation (if ROW=TRUE).  If ROW=FALSE, then all scaling will be
+   # performed by column.  It may also first subtract off the (row)'s mean if
+   # MEAN=TRUE.  For (rows) whose SD=0, they are set aside and added back once
+   # the normalization is finished
+   # We assume that counts have already been normalized across samples!!
+   rowcol <- ifelse(ROW==TRUE, 1, 2)          # normalization by row or column
+   rowcolInv <- ifelse(rowcol==1, 2, 1)       # inverse val needed for norm
+   SD <- apply(DM, rowcol, sd)                # calc std deviations
+   numSDzeros <- sum(SD==0)
+   # remove row / col if SD == 0
+   if(numSDzeros>0){                          # rm row/col if SD == 0
+      zeroSD <- which(SD == 0)                # id examples with zero SD
+      DM <- ifelse(rowcol==2, list(DM[, -zeroSD]), list(DM[-zeroSD,]))[[1]]
+      SD <- SD[-zeroSD]
+   }
+
+   means <- apply(DM, rowcol, mean)
+   
+   # apply normalization with or without mean subtraction:
+   if(MEAN==FALSE){
+      DM <- t(apply(DM, rowcolInv, function(x){x / SD}))
+   }
+   else{
+      DM <- t(apply(DM, rowcolInv, function(x){(x - means) / SD}))
+   }
+
+   if(rowcol == 1){           # transpose matrix if normalization is across rows
+      DM <- t(DM)
+   }
+   
+   # add back all-zero row / column taken out earlier (if done at all)
+   if(numSDzeros>0){
+      if(rowcol ==1){
+         zeros <- matrix(rep(0, length(zeroSD)*dim(DM)[2]), ncol=dim(DM)[2])
+         rownames(zeros) <- names(zeroSD)
+         DM <- rbind(DM, zeros)
+      }
+      else{
+         zeros <- matrix(rep(0, length(zeroSD)*dim(DM)[1]), nrow=dim(DM)[1])
+         colnames(zeros) <- names(zeroSD)
+         DM <- cbind(DM, zeros)
+      }
+   }
+   return(DM)
+}
 ```
 ### Subsetting Toil Data
 
@@ -191,7 +240,7 @@ quart3 <- apply(ttnNozeros, 1, function(x) quantile(x)[4])
 sd(quart3)/mean(quart3)              # still 0.35
 
 # next, let's filter all 3rd quartile < 0.14 counts--filter criterion in log-scale:
-zeroExpGenes <- which(apply(toilTrain, 2, function(x) quantile(x)[4]) < 0.2)
+zeroExpGenes <- which(apply(toilTrain, 2, function(x) quantile(x)[4]) < 0.2)    ############## USED LATER
 ttnNoNearzeros <- toilTrainNat[,-zeroExpGenes]
 quart3 <- apply(ttnNoNearzeros, 1, function(x) quantile(x)[4])
 sd(quart3)/mean(quart3)              # CV drops slightly to 0.336
@@ -225,16 +274,11 @@ pickRefSample <- function(X, logged=FALSE){  # X is matrix with samples as rows
    return(list(refSampleName, scaledX))
 }
 
-weightedTrimmedMean <- function(refSample, testSample){
+weightedTrimmedMean <- function(refSample, testSample, refName, testName, df, refSmpUnscaled){
    # ref and smpl are both numeric vectors, and we assume data are on natural
    # scale.  The values are represented as fraction of total counts.  So
-   # sum(ref) = sum(smpl) = 1
-   # calculate log-FC.  All #'s are very small < 0.01, so not adding "1"
-   testSampleName <- rownames(toilTrainScaled)[1]
-
-   logFC <- weightedTrimmedMean(refSample, testSample)
-   # for reference, 2227 genes log(FC)=-Inf and 2214 had log(FC)=Inf, which is about
-   # 10% in each direction.
+   # df should be 'toilTrainFilter'
+   
    
    # first filter off any genes that are zero in refSample or testSample
    # # but for Yg• ≠ 0.
@@ -243,7 +287,8 @@ weightedTrimmedMean <- function(refSample, testSample){
    unionZeros <- sort(unique(append(refZeros, smpZeros)))
    refSampleFilt <- refSample[-unionZeros]
    testSampleFilt <- testSample[-unionZeros]
-   
+
+   # calculate M and A only for filtered genes   
    refLog <- log2(refSampleFilt)
    smpLog <- log2(testSampleFilt)
    M <- refLog - smpLog           # ref sample in numerator
@@ -256,23 +301,36 @@ weightedTrimmedMean <- function(refSample, testSample){
    A_middle90 <- names(A[(A >= A_limits[1] & A <= A_limits[2]) == TRUE])
    M_middle40 <- names(M[(M >= M_limits[1] & M <= M_limits[2]) == TRUE])
    
+   
    # grab genes names in intersection of A_middle90 and M_middle40
    genes4norm <- dplyr::intersect(A_middle90, M_middle40)
-   M_normGenes <- names(M[genes4norm])
+   print(c("header genes4norm", head(genes4norm)))
    #########
    # Nk and Nr must be relative to the 9131 genes that remain.
    # further, Ygk and Ygr need to be recalculated relative to that value
    #########
    # grab 2 samples on Norm Genes on Natural Scale:
-   refSelectNat <- toilTrainFilter[refName,M_normGenes]
-   testSelectNat <- toilTrainFilter[testSampleName,M_normGenes]
+   refSelectNat <- refSmpUnscaled[genes4norm]
+   testSelectNat <- df[testSampleName,genes4norm]
+   
+   print(c("name equality", head(sort(names(refSelectNat))), head(sort(names(testSelectNat)))))
+   
+   ######## THESE ARE NOT IN THE SAME ORDER UNLESS THEY ARE SORTED.  VERY IMPORTANT
+   ######## REFSELECTNAT AND TESTSELECTNAT
+   
+   # print(c("scale of vects", head(refSelectNat), head(testSelectNat)))
+   # looks okay
    
    # subset M for normalization genes
-   M_norm <- M[M_normGenes]
+   M_norm <- M[genes4norm]
    
    # calculate Nk and Nr
    Nr <- sum(refSelectNat)
    Nk <- sum(testSelectNat)
+   
+   #print(c("Nr & Nk", Nr, Nk))
+   #print(c("is.na", any(is.na(refSelectNat)), any(is.na(testSelectNat))))
+   # looks okay
    
    # calculate weights
    RefDiff <- Nr - refSelectNat
@@ -280,83 +338,45 @@ weightedTrimmedMean <- function(refSample, testSample){
    RefProd <- Nr * refSelectNat
    TestProd <- Nk * testSelectNat
    weights <- (RefDiff/RefProd) + (TestDiff/TestProd)
+   #print(weights)
    
    # calculate Trimmed Mean scaling factor
-   TMM_log2 <- sum(M_norm * weights)/sum(weights)
+   TMM_log2 <- sum(M_norm * weights)/sum(weights)   # some NaN here
    TMM <- 2^TMM_log2
+   return(TMM)
 }
 
 ### 2. select a reference sample against which other samples will be scaled
 lst <- pickRefSample(toilTrainFilter, logged=FALSE) 
-refName <- lst[[1]]
+refName <- lst[[1]]                                                         #### USED LATER
 toilTrainScaled <- lst[[2]]
-refSample <- toilTrainScaled[which(rownames(toilTrainScaled) == refName),]
-
-testSample <- toilTrainScaled[1,]
-testSampleName <- rownames(toilTrainScaled)[1]
-
-logFC <- weightedTrimmedMean(refSample, testSample)
-# for reference, 2227 genes log(FC)=-Inf and 2214 had log(FC)=Inf, which is about
-# 10% in each direction.
-
-# first filter off any genes that are zero in refSample or testSample
-# # but for Yg• ≠ 0.
-refZeros <- which(refSample==0)
-smpZeros <- which(testSample==0)
-unionZeros <- sort(unique(append(refZeros, smpZeros)))
-refSampleFilt <- refSample[-unionZeros]
-testSampleFilt <- testSample[-unionZeros]
-
-refLog <- log2(refSampleFilt)
-smpLog <- log2(testSampleFilt)
-M <- refLog - smpLog           # ref sample in numerator
-A <- 0.5 * (refLog + smpLog)   
-
-# grab middle 40% of M and middle 90% of A
-M_limits <- quantile(M, probs = seq(0,1,0.05))[c(7,15)]  # diagnostic
-A_limits <- quantile(A, probs = seq(0,1,0.05))[c(2,20)]  # diagnostic
-
-A_middle90 <- names(A[(A >= A_limits[1] & A <= A_limits[2]) == TRUE])
-M_middle40 <- names(M[(M >= M_limits[1] & M <= M_limits[2]) == TRUE])
-
-# grab genes names in intersection of A_middle90 and M_middle40
-genes4norm <- dplyr::intersect(A_middle90, M_middle40)
-M_normGenes <- names(M[genes4norm])
-#########
-# Nk and Nr must be relative to the 9131 genes that remain.
-# further, Ygk and Ygr need to be recalculated relative to that value
-#########
-# grab 2 samples on Norm Genes on Natural Scale:
-refSelectNat <- toilTrainFilter[refName,M_normGenes]
-testSelectNat <- toilTrainFilter[testSampleName,M_normGenes]
-
-# subset M for normalization genes
-M_norm <- M[M_normGenes]
-
-# calculate Nk and Nr
-Nr <- sum(refSelectNat)
-Nk <- sum(testSelectNat)
-
-# calculate weights
-RefDiff <- Nr - refSelectNat
-TestDiff <- Nk - testSelectNat
-RefProd <- Nr * refSelectNat
-TestProd <- Nk * testSelectNat
-
-weights <- (RefDiff/RefProd) + (TestDiff/TestProd)
-TMM_log2 <- sum(M_norm * weights)/sum(weights)
-TMM <- 2^TMM_log2
-# divide test sample by TMM.
+refSample <- toilTrainScaled[which(rownames(toilTrainScaled) == refName),]  #### USED LATER
+refSampleUnscaled <- toilTrainFilter[refName,]                              #### USED LATER
+### 3. go through each sample in training set and get scaling factor
+ScalFact <- list()
+samples <- rownames(toilTrainFilter)
+i <- 1
+for(trainSampleName in samples[1:2]){
+   trainSample <- toilTrainScaled[i,]
+   scalingFactor <- weightedTrimmedMean(refSample, trainSample, refName, trainSampleName, toilTrainFilter,
+                                        refSampleUnscaled)
+   ScalFact <- c(ScalFact, scalingFactor)
+   i = i+1
+}
 
 
-
+### 4. Scale toilTrainFilter matrix using scaling factors
+ScalFact <- unlist(ScalFact)
+dim(toilTrainFilter)
+toilTrainFiltScaled <- apply(toilTrainFilter, 2, function(x) x/ScalFact)
+### we now have a scaled training matrix
 ```
 Next, I'll remove all genes if >75% of it's sample have XXX
 ```{r}
 require(ggplot2)
 # Let's start with distribution of median counts for each gene.
-quant75LevelsGenes <- apply(toilSubset, 1, quantile)[4,]
-hist(quant75LevelsGenes, breaks=100)
+quant75LevelsGenes <- apply(log2(toilTrainFiltScaled + 1), 1, quantile)[4,]
+hist(quant75LevelsGenes, breaks=100, main="75th quantile log2(normalized counts)")
 ```
 Remember that these values are on the log2 scale!  Therefore, genes under log2(exp) = 5 are likely very noisy.  For now, I'm only going to filter out the lowest genes:
 
@@ -366,27 +386,28 @@ print(paste("The maximum log2(Gene 75th quantile) is ", max(quant75LevelsGenes),
 ```
 Gene Filtering, Convert Values to Normal Scale, and transpose Matrix
 ```{r}
-# filter genes virtually non-existent:
-toilSubset <- toilSubset %>% tibble::rownames_to_column("genename") %>%  filter(quant75LevelsGenes > 0.2)    # 31995 genes left across 382 samples plus genename column
-# to natural scale and transpose the matrix:
-toilSubNatural <- as.matrix(exp(toilSubset[,2:dim(toilSubset)[2]]) -1)
-rownames(toilSubNatural) <- toilSubset$genename
-toilSubNatural <- t(toilSubNatural)
-
+if(FALSE){
+   # filter genes virtually non-existent:
+   toilSubset <- toilSubset %>% tibble::rownames_to_column("genename") %>%  filter(quant75LevelsGenes > 0.2)    # 31995 genes left across 382 samples plus genename column
+   # to natural scale and transpose the matrix:
+   toilSubNatural <- as.matrix(exp(toilSubset[,2:dim(toilSubset)[2]]) -1)
+   rownames(toilSubNatural) <- toilSubset$genename
+   toilSubNatural <- t(toilSubNatural)
+}
 ```
-# t-SNE to view Cancer/Healthy Diagnosis Partitioning
+# t-SNE to view Cancer/Healthy Diagnosis Partitioning among training samples
 ```{r}
 require(Rtsne);
 require(ggplot2);
 set.seed(31234)
-tSNEout_toilSN <- Rtsne(toilSubNatural, dims=2)
-prognosis <- c(rep(1, 76), rep(2,109), rep(3, 197))       # 1/2 = healthy, 3 = cancer
+tSNEout_toilSN <- Rtsne(toilTrainFiltScaled, dims=2)
+prognosis <- c(rep(1, 59), rep(2,80), rep(3, 148))       # 1/2 = healthy, 3 = cancer
 tsne_plot_toil <- data.frame(x=tSNEout_toilSN$Y[,1], y = tSNEout_toilSN$Y[,2], col=prognosis)
 colors3pal <- c("#FDAE6B", "#E6550D",  "#56B4E9")
 #tsne_plot_3class <- data.frame(x=tSNEout_full$Y[,1], y = tSNEout_full$Y[,2], col=prognosis)
 ggplot(tsne_plot_toil) + 
    geom_point(aes(x=x, y=y, color=as.factor(col))) + 
-   ggtitle("t-SNE Plot of Training Data Using All Filtered Predictors of Toil Data") +
+   ggtitle("t-SNE Plot of Training Data Using All Filtered Predictors of Toil Training Data") +
    scale_color_manual(name="Category",
                       breaks = c("1", "2", "3"),
                       values = c(colors3pal[1], colors3pal[2], colors3pal[3]),
@@ -407,48 +428,58 @@ Now that test and training sets have been created, I'll perform quantile-quantil
 
 
 ```{r}
-hist(log2(toilSubNatTrainPred[1,]))
-
-# Quantile - Quantile Normalization
-require(preprocessCore)
-X_quantile <- normalize.quantiles(Xorig)
-colnames(X_quantile) <- colnames(Xorig)
-rownames(X_quantile) <- rownames(Xorig)
-sampleMediansQuantile <- data.frame(colMedians(X_quantile))
-rownames(sampleMediansQuantile) <- colnames(X_quantile)
-sampleMediansQuantile <- cbind(sampleMediansQuantile, c(rep(0, 148), rep(1, 148)))
+if(FALSE){
+   hist(log2(toilSubNatTrainPred[1,]))
+   
+   # Quantile - Quantile Normalization
+   require(preprocessCore)
+   X_quantile <- normalize.quantiles(Xorig)
+   colnames(X_quantile) <- colnames(Xorig)
+   rownames(X_quantile) <- rownames(Xorig)
+   sampleMediansQuantile <- data.frame(colMedians(X_quantile))
+   rownames(sampleMediansQuantile) <- colnames(X_quantile)
+   sampleMediansQuantile <- cbind(sampleMediansQuantile, c(rep(0, 148), rep(1, 148)))
+}
 ```
 ### Logistic Regression with Lasso Regularizer on Toil Data
 I'd like to compare the performance on this breast cancer dataset in the absence of batch normalization (ComBat).
 ```{r, fig.height=8, fig.width=8}
-require(glmnet);
-require(ggplot2);
-# install_github("ririzarr/rafalib")
-require(rafalib);
+
 
 ##############
 ### Split toil matrix into training and test sets:
 
 # remove outcome variable:
-toilSubNatTrainPred <- toilSubNatTrain %>% select(-outcome)
-toilSubNatTestPred <- toilSubNatTest %>% select(-outcome)
-# convert back to matrices:
-toilSubNatTrainPred <- as.matrix(toilSubNatTrainPred)
-toilSubNatTestPred <- as.matrix(toilSubNatTestPred)
-
-# center and scale the data:
-toilTrainScaled <- scaleData(toilSubNatTrainPred, TRUE, FALSE)
-toilTestScaled <- scaleData(toilSubNatTestPred, TRUE, FALSE)
-
-# QA STDEV and MEAN of each column
-all(abs(apply(toilTrainScaled, 2, mean)) < 0.00001)
-all(abs(apply(toilTestScaled, 2, mean)) < 0.00001)
-all(abs(apply(toilTrainScaled, 2, sd)) < 1.01 & abs(apply(toilTrainScaled, 2, sd)) > 0.99)
-all(abs(apply(toilTestScaled, 2, sd)) < 1.01 & abs(apply(toilTestScaled, 2, sd)) > 0.99)
+if(FALSE){
+   toilSubNatTrainPred <- toilSubNatTrain %>% select(-outcome)
+   toilSubNatTestPred <- toilSubNatTest %>% select(-outcome)
+   # convert back to matrices:
+   toilSubNatTrainPred <- as.matrix(toilSubNatTrainPred)
+   toilSubNatTestPred <- as.matrix(toilSubNatTestPred)
+   
+   # center and scale the data:
+   toilTrainScaled <- scaleData(toilSubNatTrainPred, TRUE, FALSE)
+   toilTestScaled <- scaleData(toilSubNatTestPred, TRUE, FALSE)
+   
+   # QA STDEV and MEAN of each column
+   all(abs(apply(toilTrainScaled, 2, mean)) < 0.00001)
+   all(abs(apply(toilTestScaled, 2, mean)) < 0.00001)
+   all(abs(apply(toilTrainScaled, 2, sd)) < 1.01 & abs(apply(toilTrainScaled, 2, sd)) > 0.99)
+   all(abs(apply(toilTestScaled, 2, sd)) < 1.01 & abs(apply(toilTestScaled, 2, sd)) > 0.99)
+}
 ###############
 ### Fitting Logistic Regression with Lasso Regularizer on toilSubNatural matrix
+require(glmnet);
+require(ggplot2);
+# install_github("ririzarr/rafalib")
+require(rafalib);
+
+# scale each gene by its standard deviation and center it by its mean so that all coefficients
+# are on equal footing
+toilTrainFiltScaledSD <- scaleData(toilTrainFiltScaled, TRUE, FALSE)
+
 set.seed(1011)
-fitToil.lasso <- glmnet(toilTrainScaled, outcomeTrain, family="binomial",
+fitToil.lasso <- glmnet(toilTrainFiltScaledSD, outcomeTrain, family="binomial",
                            alpha = 1)
 plot(fitToil.lasso, xvar="lambda", label=TRUE)
 
@@ -456,11 +487,57 @@ plot(fitToil.lasso, xvar="lambda", label=TRUE)
 It's clear that scaling the predictors before Lasso enables many more to be used.  It would be interesting to see how many of these genes have a low level of expression (and therefore might be noisy data).
 ```{r}
 #fitToil.lasso
+
 set.seed(1011)
-cv.Toil.lasso <- cv.glmnet(toilTrainScaled, outcomeTrain, family="binomial", alpha=1) 
+cv.Toil.lasso <- cv.glmnet(toilTrainFiltScaledSD, outcomeTrain, family="binomial", alpha=1) 
                       #type.measure = "deviance")
 plot(cv.Toil.lasso)
 ```
+
+### Select the Model
+```{r}
+coefsToil <- coef(fitToil.lasso, s=cv.Toil.lasso$lambda.1se)
+```
+### Filter and Scale Test Data
+```{r}
+### 1. Filter out near-zero genes as defined with training data:
+toilTestFilter <- toilTest[,-zeroExpGenes]   # using Same Gene List Filter (near-zero) established in Training Set
+# now 95 x 32177 on log2(x+1) scale
+
+
+### 2. Scale test data as fraction of all sample counts
+## define scaling function (same logic as with training data)
+toilTestFiltNat <- 2^(toilTestFilter) - 1
+
+scaleTestSamples <- function(X, logged=FALSE){  # X is matrix with samples as rows
+                   # representative reference sample selected via edgeR specs
+                   # this script assumes data are on natural scale.
+   Xnat <- if(logged==TRUE) ((2^X)-1) else X  # put in natural scale
+   N <- apply(Xnat, 1, sum)
+   scaledX <- apply(Xnat, 2, function(x) x / N)
+   return(scaledX)
+}
+toilTestScaled <- scaleTestSamples(toilTestFiltNat, logged=TRUE)
+
+
+### 3. Individually scale test samples relative to training reference sample.  Each scaling is
+#      independent of other scalings.
+ScalFact <- list()
+samples <- rownames(toilTestFilter)
+
+i <- 1
+for(testSampleName in samples){         # some of the passed variables were created in training set
+   testSample <- toilTestScaled[i,]
+   scalingFactor <- weightedTrimmedMean(refSample, testSample, refName, testSampleName, toilTestFiltNat, refSampleUnscaled)
+   ScalFact <- c(ScalFact, scalingFactor)
+   i = i+1
+}
+ScalFact <- unlist(ScalFact)
+```
+### Create Confusion Matrix
+
+
+
 ```{r}
 toilTest <- cbind(1, toilTestScaled)
 colnames(toilTest)[1] <- "(Intercept)"
@@ -470,7 +547,7 @@ coefsToil <- coef(fitToil.lasso, s=cv.Toil.lasso$lambda.1se)
 testPredictions_Toil <- ifelse(toilTest %*% coefsToil > 0, 1, 0)
 table(outcomeTest, testPredictions_Toil)
 ```
-##### (in progress)
+### Look at Function of Predictors
 
 
 
