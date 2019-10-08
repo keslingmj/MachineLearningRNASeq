@@ -116,7 +116,9 @@ idxTrain <- sample.split(wangWithAttrib$primary_diagnosis, SplitRatio = 0.75)
 # confirm randomness of selection:
 qa <- cbind(idxTrain, wangWithAttrib$primary_diagnosis)
 paste(sum(qa[qa[,2]==0,][,1]), " and ", sum(qa[qa[,2]==1,][,1]), " training sizes amongst healthy and cancer samples shows equal partitioning")
+```
 
+```{r}
 # next, we grab the output vectors, both train and test
 diagTrain <- subset(wangWithAttrib$primary_diagnosis, idxTrain==TRUE)
 diagTest <- subset(wangWithAttrib$primary_diagnosis, idxTrain==FALSE)
@@ -386,6 +388,17 @@ grid.arrange(ls[[1]], ls[[2]], ls[[3]], ls[[4]], ls[[5]], ls[[6]], ncol=2)
 ```
 I'm going to plot these same genes when they are quantile-normalized:
 ```{r, fig.height=8, fig.width=8}
+# first, I'm going to build a model based on quantile-norm data.
+# then we'll look at overlap with other predictors
+# then we'll also find, via rowttest which genes have great BH qval but even better
+# great fold change.
+# then do plotting for strong predictors.
+
+# we then want to know the GO -Slim BPs for these genes.
+
+
+
+
 ls <- list()
 for(i in 1:6){
    geneValues <- cbind(c(rep(0, 148), rep(1, 148)), log2(X_quantile[geneNames[i],]), c3vect)

@@ -170,7 +170,7 @@ require(ggplot2);
 require(rafalib);
 
 ###############
-### Fitting Logistic Regression with Lasso Regularizer on 
+### Create t-SNE Plot on:
 ### (A) non-scaled data
 ### (B) data scaled by SD only
 ### (C) data scaled by SD and centered by Mean

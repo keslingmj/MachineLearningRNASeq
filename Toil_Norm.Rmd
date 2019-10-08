@@ -8,6 +8,55 @@ output: rmarkdown::github_document
 ```{r setup, include=FALSE}
 knitr::opts_chunk$set(echo = TRUE)
 require(matrixStats)
+
+######## FUNCTIONS NOT TO BE PRINTED IN MARKDOWN DOC:
+scaleData <- function(DM, MEAN=TRUE, ROW=FALSE){
+   # this function takes a data matrix, DM, and scales the data by each row's
+   # standard deviation (if ROW=TRUE).  If ROW=FALSE, then all scaling will be
+   # performed by column.  It may also first subtract off the (row)'s mean if
+   # MEAN=TRUE.  For (rows) whose SD=0, they are set aside and added back once
+   # the normalization is finished
+   # We assume that counts have already been normalized across samples!!
+   rowcol <- ifelse(ROW==TRUE, 1, 2)          # normalization by row or column
+   rowcolInv <- ifelse(rowcol==1, 2, 1)       # inverse val needed for norm
+   SD <- apply(DM, rowcol, sd)                # calc std deviations
+   numSDzeros <- sum(SD==0)
+   # remove row / col if SD == 0
+   if(numSDzeros>0){                          # rm row/col if SD == 0
+      zeroSD <- which(SD == 0)                # id examples with zero SD
+      DM <- ifelse(rowcol==2, list(DM[, -zeroSD]), list(DM[-zeroSD,]))[[1]]
+      SD <- SD[-zeroSD]
+   }
+
+   means <- apply(DM, rowcol, mean)
+   
+   # apply normalization with or without mean subtraction:
+   if(MEAN==FALSE){
+      DM <- t(apply(DM, rowcolInv, function(x){x / SD}))
+   }
+   else{
+      DM <- t(apply(DM, rowcolInv, function(x){(x - means) / SD}))
+   }
+
+   if(rowcol == 1){           # transpose matrix if normalization is across rows
+      DM <- t(DM)
+   }
+   
+   # add back all-zero row / column taken out earlier (if done at all)
+   if(numSDzeros>0){
+      if(rowcol ==1){
+         zeros <- matrix(rep(0, length(zeroSD)*dim(DM)[2]), ncol=dim(DM)[2])
+         rownames(zeros) <- names(zeroSD)
+         DM <- rbind(DM, zeros)
+      }
+      else{
+         zeros <- matrix(rep(0, length(zeroSD)*dim(DM)[1]), nrow=dim(DM)[1])
+         colnames(zeros) <- names(zeroSD)
+         DM <- cbind(DM, zeros)
+      }
+   }
+   return(DM)
+}
 ```
 ### Looking at Batch Effects
 
@@ -86,11 +135,12 @@ colReOrder <- grep("^GTEX", colnames(toilSubset))
 colReOrder <- c(colReOrder, grep("11$", colnames(toilSubset)))
 colReOrder <- c(colReOrder, grep("01$", colnames(toilSubset)))
 tmp <- toilSubset[,colReOrder]
-rownames(tmp) <- paste0(toilSubset$gene, "-", toilSubset$rowname)
+rownames(tmp) <- paste0(toilSubset$gene, "-", toilSubset$rowname) #complicated
+# but needed to avoid duplicates
 toilSubset <- tmp
 rm(tmp)
 ```
-Next, I'll remove all genes if >75% of it's sample have XXX
+Next, I'll remove every gene if >75% of it's samples have XXX
 ```{r}
 require(ggplot2)
 # Let's start with distribution of median counts for each gene.
@@ -134,7 +184,65 @@ ggplot(tsne_plot_toil) +
 The t-SNE plot shows significant batch effects between healthy TCGA samples and healthy GTEX samples.
 ### Logistic Regression with Lasso Regularizer on Toil Data
 I'd like to compare the performance on this breast cancer dataset in the absence of batch normalization (ComBat).
+```{r, fig.height=8, fig.width=8}
+require(glmnet);
+require(ggplot2);
+# install_github("ririzarr/rafalib")
+require(rafalib);
+dim(toilSubNatural)
+##############
+### Split toil matrix into training and test sets:
+require(caTools)
+set.seed(233992812)
+outcome <- c(rep(0, 185), rep(1, 197))
+# bind outcome variable on data frame for even, random partitioning
+toilSubNatural <- data.frame(cbind(toilSubNatural, outcome))
+idxTrain <- sample.split(toilSubNatural$outcome, SplitRatio = 0.75)
+toilSubNatTrain <- subset(toilSubNatural, idxTrain==TRUE)
+outcomeTrain <- subset(toilSubNatural$outcome, idxTrain==TRUE)
+toilSubNatTest <- subset(toilSubNatural, idxTrain==FALSE)
+outcomeTest <- subset(toilSubNatural$outcome, idxTrain==FALSE)
+# remove outcome variable:
+toilSubNatTrainPred <- toilSubNatTrain %>% select(-outcome)
+toilSubNatTestPred <- toilSubNatTest %>% select(-outcome)
+# convert back to matrices:
+toilSubNatTrainPred <- as.matrix(toilSubNatTrainPred)
+toilSubNatTestPred <- as.matrix(toilSubNatTestPred)
 
+# center and scale the data:
+toilTrainScaled <- scaleData(toilSubNatTrainPred, TRUE, FALSE)
+toilTestScaled <- scaleData(toilSubNatTestPred, TRUE, FALSE)
+
+# QA STDEV and MEAN of each column
+all(abs(apply(toilTrainScaled, 2, mean)) < 0.00001)
+all(abs(apply(toilTestScaled, 2, mean)) < 0.00001)
+all(abs(apply(toilTrainScaled, 2, sd)) < 1.01 & abs(apply(toilTrainScaled, 2, sd)) > 0.99)
+all(abs(apply(toilTestScaled, 2, sd)) < 1.01 & abs(apply(toilTestScaled, 2, sd)) > 0.99)
+###############
+### Fitting Logistic Regression with Lasso Regularizer on toilSubNatural matrix
+set.seed(1011)
+fitToil.lasso <- glmnet(toilTrainScaled, outcomeTrain, family="binomial",
+                           alpha = 1)
+plot(fitToil.lasso, xvar="lambda", label=TRUE)
+
+```
+It's clear that scaling the predictors before Lasso enables many more to be used.  It would be interesting to see how many of these genes have a low level of expression (and therefore might be noisy data).
+```{r}
+#fitToil.lasso
+set.seed(1011)
+cv.Toil.lasso <- cv.glmnet(toilTrainScaled, outcomeTrain, family="binomial", alpha=1) 
+                      #type.measure = "deviance")
+plot(cv.Toil.lasso)
+```
+```{r}
+toilTest <- cbind(1, toilTestScaled)
+colnames(toilTest)[1] <- "(Intercept)"
+toilTest <- as.matrix(toilTest)
+
+coefsToil <- coef(fitToil.lasso, s=cv.Toil.lasso$lambda.1se)
+testPredictions_Toil <- ifelse(toilTest %*% coefsToil > 0, 1, 0)
+table(outcomeTest, testPredictions_Toil)
+```
 ##### (in progress)
 
 
