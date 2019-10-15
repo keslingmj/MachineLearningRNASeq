@@ -419,7 +419,7 @@ It's clear that scaling the predictors before Lasso enables many more to be used
 
 ### Cross-Validating the Model to Pick the Smallest, Well-Performing Model
 I'm going to look at cross-validating the model in order to pick the simplest one that performs well.
-```{r}
+```{r, fig.height=8, fig.width=8}
 set.seed(1011)
 cv.Toil.lasso <- cv.glmnet(toilTrainFiltScaledSD, outcomeTrain, family="binomial", alpha=1) 
                       #type.measure = "deviance")
@@ -429,16 +429,85 @@ We can see that 42 predictors gives us a model whose deviance is within 1-standa
 
 ### Select the Model by Capturing the Coefficients
 ```{r}
+require(biomaRt)
 coefsToil <- coef(fitToil.lasso, s=cv.Toil.lasso$lambda.1se)
 allCoefsNames <- rownames(coefsToil)
 idx <- which(coefsToil!= 0)
 coefsFullNames <- allCoefsNames[idx]
 
 coefsToilNonZero <- coefsToil[which(coefsToil!= 0)]
+class(coefsToilNonZero)                 #### get to sort numerically based on abs value, desc
+coefsToilNZ_Abs <- abs(coefsToilNonZero)
 coefsShortNames <- gsub("\\..*$", "", coefsFullNames)
-coefsDF <- cbind(coefsShortNames, coefsToilNonZero)
-#print(c("The (cleaned-up) names of the predictors are "))
-print(coefsDF)
+# get Entrez ID ########################################## need for Panther
+
+coefsDF <- data.frame(cbind(coefsToilNonZero, coefsToilNZ_Abs))
+coefsDF <- cbind(coefsShortNames, coefsDF)
+colnames(coefsDF) <- c("geneName", "coefs", "coefs_abs")
+coefsDF %>% arrange(desc(coefs_abs))  %>% select(geneName, coefs)              
+```
+### Retrieving Gene Information for the Model's Predictors
+These are the 42 gene predictors in the model plus the Intercept, each with its coefficient after shrinkage.
+```{r}
+# we'll grab biomaRt data for these genes
+listMarts()
+ensembl=useMart("ensembl")
+ensembl = useDataset("hsapiens_gene_ensembl",mart=ensembl)
+# let's look at the filters:
+listFilters(ensembl)
+# with_goslim_goa	With GOSlim GOA ID(s)		
+# with_hgnc	With HGNC Symbol ID(s)
+# with_ens_lrg_gene	With LRG display in Ensembl gene ID(s)		
+# with_ens_lrg_transcript	With LRG display in Ensembl transcript ID(s)
+# ensembl_gene_id	Gene stable ID(s) [e.g. ENSG00000000003]		
+# ensembl_gene_id_version	Gene stable ID(s) with version [e.g. ENSG00000000003.15]
+# go	GO ID(s) [e.g. GO:0000002]
+# goslim_goa	GOSlim GOA ID(s) [e.g. GO:0000003]		
+# hgnc_id	HGNC ID(s) [e.g. HGNC:100]		
+# hgnc_symbol	HGNC symbol(s) [e.g. A1BG]
+# go_parent_term	Parent term accession
+# go_parent_name	Parent term name
+attributes = listAttributes(ensembl)
+grep("gene", attributes)
+# description	Gene description
+# gene_biotype	Gene type
+# name_1006	GO term name
+# goslim_goa_accession	GOSlim GOA Accession(s)	feature_page		
+# goslim_goa_description	GOSlim GOA Description
+# hgnc_id	HGNC ID	feature_page		
+# hgnc_symbol	HGNC symbol
+# entrezgene_description	NCBI gene description	feature_page		
+# entrezgene_accession	NCBI gene accession	feature_page		
+# entrezgene_id	NCBI gene ID
+# family_description	Ensembl Family Description
+
+geneNames = c("MIR497HG","BGN","SRP9","ARHGAP20","PAFAH1B3","FXYD1","NDRG2","KLHL29","SRPX","TBL2","RILP","LMOD1","KCNJ2","AC093609","RP5","TRBV11","MAZ","CNTNAP3P2","TINAGL1","CHPF2","NKAPL","LIMK1","SLC17A7","FNDC1","CDK5","ZNF668","EDNRB","SDPR","USP44","CLDN8","TTYH3","H3F3A","GABARAPL1","ABCA5","ABCG1","PDK4","KLF15","NTNG2","ATP6V0B","CTD","ADAMTS5","FAM89B")
+
+# geneID_Name_Description <- getBM(attributes=c("hgnc_id", "hgnc_symbol", "description"),
+#       values=geneNames,
+#       mart=ensembl)
+# write.csv(geneID_Name_Description, file="geneAttr.csv")
+geneID_Name_Description <- read.csv("geneAttr.csv", header=TRUE)
+
+# sum(geneID_Name_Description$hgnc_symbol %in% geneNames)
+geneAnnot37 <- geneID_Name_Description %>% filter(hgnc_symbol %in% geneNames)
+geneAnnot37$hgnc_id <- gsub("^HGNC:","", geneAnnot37$hgnc_id)
+missing <- setdiff(geneNames, geneAnnot37$hgnc_symbol)   # 5 genes missing from biomaRt
+
+# read in GO file for functions
+# these data were obtained from ftp://ftp.pantherdb.org/sequence_classifications/current_release/PANTHER_Sequence_Classification_files/ and from there, I selected the human file.
+GO_df <- read.csv("PTHR14.1_human_", sep="\t")
+# colnames(GO_df)  # need col #1, #5, #7 
+# reduce size of GO_df
+GO_df <- GO_df[,c(1,5,7)]
+GO_df[,1] <- gsub("HUMAN\\|HGNC=", "", GO_df[,1]) %>% {gsub("\\|UniProt.*$", "", .)}
+colnames(GO_df) <- c("hgnc_id", "subfamily", "BP")
+# join the 2 df together
+geneAnnot37_Expand <- inner_join(geneAnnot37, GO_df, by=c("hgnc_id", "hgnc_id"))
+geneAnnot37_Expand$description <- gsub(" \\[Source.*$","",geneAnnot37_Expand$description)
+write.csv(geneAnnot37_Expand, "geneAttr_Expand.csv")  # pair down BP manually
+geneName_desc35 <- geneAnnot37_Expand %>% dplyr::select(hgnc_symbol, description)
+### just need to order this info and keep the coefficient as well### 
 ```
 when performing predictions, we'll need *coefsFullNames* and *coefsToilNonZero*.
 Remember when looking at these Lasso-Regularized Coefficients that each predictor gene was offset by its mean and scaled by its standard deviation.  That way, lower and more highly transcribed genes are on equal footing to influence the model.
@@ -519,7 +588,7 @@ for(testSampleName in samples){  # some of the passed variables were created in 
    refSampleUnscaled2 <- REFSAMPLEUNSCALED[names(refSample2)]
    #print(all(names(testUnscaled2)==names(testSample2)))
    #print(c(length(refSample2), length(testSample2), length(refSampleUnscaled2),
-           #length(testUnscaled2)))
+           #   length(testUnscaled2)))
    
    scalingFactor <- weightedTrimmedMean(refSample2, testSample2, REFNAME, testSampleName,
                                         testUnscaled2, refSampleUnscaled2)
