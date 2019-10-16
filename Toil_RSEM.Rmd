@@ -228,7 +228,7 @@ Having filtered out ~28k genes whose expression is nil or very, very close to th
 ```{r}
 # we remove matrices and lists we no longer need:
 rm(toilGeneAnnot)
-rm(toilSampleNames)
+# rm(toilSampleNames) --used below for cancer stage determination
 rm(quart3)
 
 ### Define Functions
@@ -732,30 +732,60 @@ TCGA_Attr_Full <- read.csv("~/Desktop/Tresorit_iOS/projects/RNA-Seq/data/TCGA_At
 TCGA_ID_Stage <- TCGA_Attr_Full %>% select(tcgaID, tumor_stage)
 rm(TCGA_Attr_Full)
 
-# grab all TCGA IDs already used
-
+# grab all TCGA IDs already used--already created as wangTCGAsamples
+# there's also a toilSampleNames object as well.  # NOTE THAT FINAL LETTER STRIPPED OFF
 
 # initialize six tumor stage dataframes
-stageOne <- data.frame(tcgaID=character(), stage=character())
+stageOne <- data.frame(tcgaID=character(), stage=character(), novel=character)
+stageTwo <- data.frame(tcgaID=character(), stage=character(), novel=character)
+stageThree <- data.frame(tcgaID=character(), stage=character(), novel=character)
+stageFour <- data.frame(tcgaID=character(), stage=character(), novel=character)
+stageZero <- data.frame(tcgaID=character(), stage=character(), novel=character)
+stageHealthy <- data.frame(tcgaID=character(), stage=character())
+stageUnknown <- data.frame(tcgaID=character(), stage=character())
 
-
-
+######################################
+# function for appending to dataframes
+appendDFtumor <- function(id, stage){  # appends non-healthy smpl/df
+   if(any(grepl(gsub("[ABZ]$","",id), wangTCGAsamples))){
+      vect <- cbind(id, stage, novel="already_used")}  # need to eval df
+   else{
+      vect <- cbind(id, stage, novel="unused")}
+   return(vect)
+}
+#######################################
+#######################################
 # break apart tcgaIDs, and classify by type (converted to factor)
 processTumorStage <- function(df){  #expects  1 row of 2 col df: 
                                     # tcga_ID and tumor_stage
+   
    stage = unlist(df[2])
    for(id in unlist(strsplit(df[1], ";"))){
-      if(grepl("01[ABZ]$", id)){
-         #print(c(id, "healthy"))
+      if(grepl("01[ABZ]$", id)){                 # filter our healthy samples
+         stageHealthy <<- rbind(stageHealthy, cbind(id, "healthy"))
       }
-      else{
-         #print(c(id, tumor_stage))
-         if(grepl("stage i[ab]", stage)){stageOne <<- rbind(stageOne, cbind(id, stage))}
+      else{    
+         if(grepl("stage i[ab]", stage) | grepl("stage i$", stage)){
+            stageOne <<- rbind(stageOne, appendDFtumor(id, stage))}
+         else if(grepl("stage ii[ab]", stage) | grepl("stage ii$", stage)){
+            stageTwo <<- rbind(stageTwo, appendDFtumor(id, stage))}
+         else if(grepl("stage iii[abc]", stage) | grepl("stage iii$", stage)){
+            stageThree <<- rbind(stageThree, appendDFtumor(id, stage))}
+         else if(grepl("stage iv[ab]", stage) | grepl("stage iv$", stage)){
+            stageFour <<- rbind(stageFour, appendDFtumor(id, stage))}
+         else if(grepl("stage x", stage) | grepl("not reported", stage)){
+            stageUnknown <<- rbind(stageUnknown, cbind(id, stage))}
+         else{
+            print(c(id, stage, "missing class"))
+         }
       }
    }
 }
-#processTumorStage(TCGA_ID_Stage[1,])
+########################################
+
+
 apply(TCGA_ID_Stage, 1, processTumorStage)
+# rownames very ugly and not helpful!
 ```
 
 
