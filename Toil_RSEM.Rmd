@@ -436,25 +436,23 @@ idx <- which(coefsToil!= 0)
 coefsFullNames <- allCoefsNames[idx]
 
 coefsToilNonZero <- coefsToil[which(coefsToil!= 0)]
-class(coefsToilNonZero)                 #### get to sort numerically based on abs value, desc
+#class(coefsToilNonZero)                 #### get to sort numerically based on abs value, desc
 coefsToilNZ_Abs <- abs(coefsToilNonZero)
 coefsShortNames <- gsub("\\..*$", "", coefsFullNames)
 # get Entrez ID ########################################## need for Panther
 
 coefsDF <- data.frame(cbind(coefsToilNonZero, coefsToilNZ_Abs))
 coefsDF <- cbind(coefsShortNames, coefsDF)
-colnames(coefsDF) <- c("geneName", "coefs", "coefs_abs")
-coefsDF %>% arrange(desc(coefs_abs))  %>% select(geneName, coefs)              
+colnames(coefsDF) <- c("hgnc_symbol", "coefs", "coefs_abs")
+genes42coef <- coefsDF %>% arrange(desc(coefs_abs))  #%>% dplyr::select(hgnc_symbol, coefs)              
 ```
 ### Retrieving Gene Information for the Model's Predictors
 These are the 42 gene predictors in the model plus the Intercept, each with its coefficient after shrinkage.
-```{r}
-# we'll grab biomaRt data for these genes
-listMarts()
-ensembl=useMart("ensembl")
-ensembl = useDataset("hsapiens_gene_ensembl",mart=ensembl)
-# let's look at the filters:
-listFilters(ensembl)
+```{r, include=FALSE}
+# This section records various biomaRt fields that might be useful to query.
+# While there was GO cellular location, I did not find GO MF or BP.
+# biomaRt FILTERS:
+# listFilters(ensembl)                     # for viewing all avail filters
 # with_goslim_goa	With GOSlim GOA ID(s)		
 # with_hgnc	With HGNC Symbol ID(s)
 # with_ens_lrg_gene	With LRG display in Ensembl gene ID(s)		
@@ -467,8 +465,9 @@ listFilters(ensembl)
 # hgnc_symbol	HGNC symbol(s) [e.g. A1BG]
 # go_parent_term	Parent term accession
 # go_parent_name	Parent term name
-attributes = listAttributes(ensembl)
-grep("gene", attributes)
+
+# biomaRt attributes: 
+# attributes = listAttributes(ensembl)  # for viewing avail attributes
 # description	Gene description
 # gene_biotype	Gene type
 # name_1006	GO term name
@@ -480,33 +479,61 @@ grep("gene", attributes)
 # entrezgene_accession	NCBI gene accession	feature_page		
 # entrezgene_id	NCBI gene ID
 # family_description	Ensembl Family Description
+```
+
+```{r}
+# we'll grab biomaRt data for these genes
+listMarts()
+ensembl=useMart("ensembl")
+ensembl = useDataset("hsapiens_gene_ensembl",mart=ensembl)
 
 geneNames = c("MIR497HG","BGN","SRP9","ARHGAP20","PAFAH1B3","FXYD1","NDRG2","KLHL29","SRPX","TBL2","RILP","LMOD1","KCNJ2","AC093609","RP5","TRBV11","MAZ","CNTNAP3P2","TINAGL1","CHPF2","NKAPL","LIMK1","SLC17A7","FNDC1","CDK5","ZNF668","EDNRB","SDPR","USP44","CLDN8","TTYH3","H3F3A","GABARAPL1","ABCA5","ABCG1","PDK4","KLF15","NTNG2","ATP6V0B","CTD","ADAMTS5","FAM89B")
 
-# geneID_Name_Description <- getBM(attributes=c("hgnc_id", "hgnc_symbol", "description"),
-#       values=geneNames,
-#       mart=ensembl)
-# write.csv(geneID_Name_Description, file="geneAttr.csv")
+# This code is only performed the first time:
+if(FALSE){
+   geneID_Name_Description <- getBM(attributes=c("hgnc_id", "hgnc_symbol", "description"),
+      values=geneNames,
+      mart=ensembl)
+write.csv(geneID_Name_Description, file="geneAttr.csv")
+}
+
+# in subsequent runs, the attributes can be read from the file:
 geneID_Name_Description <- read.csv("geneAttr.csv", header=TRUE)
 
 # sum(geneID_Name_Description$hgnc_symbol %in% geneNames)
-geneAnnot37 <- geneID_Name_Description %>% filter(hgnc_symbol %in% geneNames)
-geneAnnot37$hgnc_id <- gsub("^HGNC:","", geneAnnot37$hgnc_id)
-missing <- setdiff(geneNames, geneAnnot37$hgnc_symbol)   # 5 genes missing from biomaRt
+# geneAnnot37 <- geneID_Name_Description %>% filter(hgnc_symbol %in% geneNames)
+#geneAnnot37 <- geneID_Name_Description %>% filter(hgnc_symbol %in% genes42coef$geneName)
+#geneAnnot37$hgnc_id <- gsub("^HGNC:","", geneAnnot37$hgnc_id)
+#missing <- setdiff(geneNames, geneAnnot37$hgnc_symbol)   # 5 genes missing from biomaRt
 
-# read in GO file for functions
-# these data were obtained from ftp://ftp.pantherdb.org/sequence_classifications/current_release/PANTHER_Sequence_Classification_files/ and from there, I selected the human file.
-GO_df <- read.csv("PTHR14.1_human_", sep="\t")
-# colnames(GO_df)  # need col #1, #5, #7 
-# reduce size of GO_df
-GO_df <- GO_df[,c(1,5,7)]
-GO_df[,1] <- gsub("HUMAN\\|HGNC=", "", GO_df[,1]) %>% {gsub("\\|UniProt.*$", "", .)}
-colnames(GO_df) <- c("hgnc_id", "subfamily", "BP")
-# join the 2 df together
-geneAnnot37_Expand <- inner_join(geneAnnot37, GO_df, by=c("hgnc_id", "hgnc_id"))
-geneAnnot37_Expand$description <- gsub(" \\[Source.*$","",geneAnnot37_Expand$description)
-write.csv(geneAnnot37_Expand, "geneAttr_Expand.csv")  # pair down BP manually
-geneName_desc35 <- geneAnnot37_Expand %>% dplyr::select(hgnc_symbol, description)
+# grab the gene symbol and description, add coefs, clean description, and print
+#geneDescrip <- geneAnnot37 %>% dplyr::select(hgnc_symbol, description)
+
+# test
+coefGeneDescrip <- inner_join(geneID_Name_Description, genes42coef, by=c("hgnc_symbol", "hgnc_symbol")) %>%
+   arrange(desc(coefs_abs)) %>%
+   dplyr::select(coefs, hgnc_symbol, description)
+coefGeneDescrip$description <- gsub(" \\[Source.*$","", coefGeneDescrip$description)
+coefGeneDescrip
+```
+```{r, include=FALSE}
+# the following code is to bring in GO functions, but I'm not going to incorporate
+# that for the moment.
+if(FALSE){
+   # read in GO file for functions
+   # these data were obtained from ftp://ftp.pantherdb.org/sequence_classifications/current_release/PANTHER_Sequence_Classification_files/ and from there, I selected the human file.
+   GO_df <- read.csv("PTHR14.1_human_", sep="\t")
+   # colnames(GO_df)  # need col #1, #5, #7 
+   # reduce size of GO_df
+   GO_df <- GO_df[,c(1,5,7)]
+   GO_df[,1] <- gsub("HUMAN\\|HGNC=", "", GO_df[,1]) %>% {gsub("\\|UniProt.*$", "", .)}
+   colnames(GO_df) <- c("hgnc_id", "subfamily", "BP")
+   # join the 2 df together
+   geneAnnot37_Expand <- inner_join(geneAnnot37, GO_df, by=c("hgnc_id", "hgnc_id"))
+   geneAnnot37_Expand$description <- gsub(" \\[Source.*$","",geneAnnot37_Expand$description)
+   write.csv(geneAnnot37_Expand, "geneAttr_Expand.csv")  # pair down BP manually
+   geneName_desc35 <- geneAnnot37_Expand %>% dplyr::select(hgnc_symbol, description)
+}
 ### just need to order this info and keep the coefficient as well### 
 ```
 when performing predictions, we'll need *coefsFullNames* and *coefsToilNonZero*.
@@ -691,7 +718,45 @@ table(outcomeTest, testPredictions_toil)
 ```
 I am still at 100% sensitivity and 100% specificity!  I used no training data for filtering or scaling the test samples.  The test set was treated separately from the beginning.
 
-### Look at Function of Predictors
+### Test Model Accuracy on TCGA Data Not Yet Examined  
+At this point, we've exhausted all the healthy breast samples either in the training set or the test set.  
+However, I'd like to test this model across the remaining TCGA tumors, grouped by *tumor stage* to see how well the model performs on those samples.  
+
+##### Collecting Unused TCGA Samples, Grouped by Tumor Stage
+I'll grab all TCGA sample names, remove those that have already been used in this study,
+either as training or test samples, and then group the data by tumor stage.
+```{r}
+# read in TCGA attribute file:
+TCGA_Attr_Full <- read.csv("~/Desktop/Tresorit_iOS/projects/RNA-Seq/data/TCGA_Attributes_full.txt",
+         header=TRUE, sep="\t", stringsAsFactors = FALSE)
+TCGA_ID_Stage <- TCGA_Attr_Full %>% select(tcgaID, tumor_stage)
+rm(TCGA_Attr_Full)
+
+# grab all TCGA IDs already used
+
+
+# initialize six tumor stage dataframes
+stageOne <- data.frame(tcgaID=character(), stage=character())
+
+
+
+# break apart tcgaIDs, and classify by type (converted to factor)
+processTumorStage <- function(df){  #expects  1 row of 2 col df: 
+                                    # tcga_ID and tumor_stage
+   stage = unlist(df[2])
+   for(id in unlist(strsplit(df[1], ";"))){
+      if(grepl("01[ABZ]$", id)){
+         #print(c(id, "healthy"))
+      }
+      else{
+         #print(c(id, tumor_stage))
+         if(grepl("stage i[ab]", stage)){stageOne <<- rbind(stageOne, cbind(id, stage))}
+      }
+   }
+}
+#processTumorStage(TCGA_ID_Stage[1,])
+apply(TCGA_ID_Stage, 1, processTumorStage)
+```
 
 
 
