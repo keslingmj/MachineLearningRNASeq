@@ -851,13 +851,112 @@ stageOneDF <- read.csv("stageOneTest.txt", header=TRUE, sep="\t",
 # Next: filter, normalize, etc. Perform all-test groups separately from one another
 # and separately from training set.
 
-
-
-
+# create outcome vectors for each test dataset
+stageOneOutcome <- rep(1,dim(stageOneDF)[1])
+stageTwoOutcome <- rep(1,dim(stageTwoDF)[1])
+stageThreeOutcome <- rep(1,dim(stageThreeDF)[1])
+stageFourOutcome <- rep(1,dim(stageFourDF)[1])
+stageHealthyOutcome <- rep(0,dim(stageHealthyDF)[1])
 ```
 
+### 1. Filter Out Genes Whose Expression is Near-Zero 
+```{r}
+# next, let's filter all 3rd quartile < 0.14 counts--filter criterion in log-scale:
+stageOneNat <- (2^stageOneDF)-1    # natural scale
+zeroExpGenes <- which(apply(stageOneDF, 2, function(x) quantile(x)[4]) < 0.2)    
+stageOneFilter <- stageOneNat[,-zeroExpGenes]
+
+stageTwoNat <- (2^stageTwoDF)-1    # natural scale
+zeroExpGenes <- which(apply(stageTwoDF, 2, function(x) quantile(x)[4]) < 0.2)    
+stageTwoFilter <- stageTwoNat[,-zeroExpGenes]
+
+stageThreeNat <- (2^stageThreeDF)-1    # natural scale
+zeroExpGenes <- which(apply(stageThreeDF, 2, function(x) quantile(x)[4]) < 0.2)    
+stageThreeFilter <- stageThreeNat[,-zeroExpGenes]
+
+stageFourNat <- (2^stageFourDF)-1    # natural scale
+zeroExpGenes <- which(apply(stageFourDF, 2, function(x) quantile(x)[4]) < 0.2)    
+stageFourFilter <- stageFourNat[,-zeroExpGenes]
+
+stageHealthNat <- (2^stageHealthyDF)-1    # natural scale
+zeroExpGenes <- which(apply(stageHealthyDF, 2, function(x) quantile(x)[4]) < 0.2)    
+stageHealthFilter <- stageHealthNat[,-zeroExpGenes]
+```
+### 2. Select a Reference Sample Amongst Test Samples for Scaling Data
+```{r}
+# lst <- pickRefSample(stageOneFilter, logged=FALSE) 
+# stageOneRefName <- lst[[1]]                                                        
+# stageOneFraction <- lst[[2]]         # scaling = x is fraction of all cts across sample
+# stageOneRefSample <- stageOneFraction[which(rownames(stageOneFraction) == stageOneRefName),]  
+# stageOneRefSampleUnscaled <- stageOneFilter[stageOneRefName,]                              
+# print(paste0("The sample chosen to the the Reference Sample for the purposes of Sample-to-Sample Normalization is ",
+#         stageOneRefName, "."))
+################################
+# replace with generic function:
+refSampleWrapper <- function(dfFilter){
+   lst <- pickRefSample(dfFilter, logged=FALSE) 
+   refName <- lst[[1]]                                                        
+   dfFraction <- lst[[2]]   # all x now fraction of total cts per sample
+   refSample <- dfFraction[which(rownames(dfFraction) == refName),]  
+   refSampleUnscaled <- dfFilter[refName,]                              
+   print(paste0("The sample chosen to the the Reference Sample for the purposes of Sample-to-Sample Normalization is ",
+           refName, "."))
+   return(list(refName, dfFraction, refSample, refSampleUnscaled))
+}
+###############################
+retVector <- refSampleWrapper(stageOneFilter)
+stageOneRefName = retVector[[1]]           # re-write whole thing using objects later
+stageOneFraction = retVector[[2]]
+stageOneRefSample = retVector[[3]]
+stageOneRefSampleUnscaled = retVector[[4]]
+```
+
+### 3. Scaling Test Samples Relative to the Chosen TEST Reference Sample (Sample-to-Sample Normalization)
+
+```{r}
+# The calcScalingFactors function calculates a scaling factor for each sample in
+# the fraction dataframe.  It calls weightedTrimmedMean of edgeR.
+calcScalingFactors <- function(dfFiltered, dfScaled, refSample, refName,
+                               testRefSampleUnscaled){
+   ScalFact <- list()
+   samples <- rownames(dfFiltered)
+   i <- 1
+   for(testSampleName in samples){
+      testSample <- dfScaled[i,]
+      testUnscaled <- dfFiltered[i,]
+      scalingFactor <- weightedTrimmedMean(refSample, testSample, refName, testSampleName, 
+                                           testUnscaled,testRefSampleUnscaled)    
+      ScalFact <- c(ScalFact, scalingFactor)
+      i = i+1
+   }
+   ScalFact <- unlist(ScalFact)
+   return(ScalFact)
+}
+
+stageOneSFs <- calcScalingFactors(stageOneFilter, stageOneFraction, stageOneRefSample,
+                                  stageOneRefName, stageOneRefSampleUnscaled)
 
 
 
+### Scale toilTrainFilter matrix using scaling factors
+# dim(toilTestFilter)
+stageOneFiltScaled <- apply(stageOneFilter, 2, function(x) x/stageOneSFs)
+### we now have a scaled test matrix
+```
+### 4. Remove Non-Predictor Genes from Filtered Test Data
+We're just keeping the 42 predictors from toilTestFiltScaled
+```{r}
+toilTestFiltScal42 <- toilTestFiltScaled[,coefsFullNames[2:length(coefsFullNames)]]
+```
+### 5. Each Relevant Predictor Gene offset by Its Mean and Scaled by Its Standard Deviation
+```{r}
+toilTestFiltScaledSD <- scaleData(toilTestFiltScal42, TRUE, FALSE)       
+# this would not be possible for individual samples!!!!!!
+toilTestFiltScaledSD <- cbind(rep(1,dim(toilTestFiltScaledSD)[1]), toilTestFiltScaledSD)
+```
+### Create Confusion Matrix for Test Data
 
-
+```{r}
+testPredictions_toil <- ifelse(toilTestFiltScaledSD %*% coefsToilNonZero > 0, 1, 0)
+table(outcomeTest, testPredictions_toil)
+```
