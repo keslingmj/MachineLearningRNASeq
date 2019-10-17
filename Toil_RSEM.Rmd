@@ -724,7 +724,8 @@ However, I'd like to test this model across the remaining TCGA tumors, grouped b
 
 ##### Collecting Unused TCGA Samples, Grouped by Tumor Stage
 I'll grab all TCGA sample names, remove those that have already been used in this study,
-either as training or test samples, and then group the data by tumor stage.
+either as training or test samples, and then group the data by tumor stage.  
+*I am not limiting this set to the Wang subset*
 ```{r}
 # read in TCGA attribute file:
 TCGA_Attr_Full <- read.csv("~/Desktop/Tresorit_iOS/projects/RNA-Seq/data/TCGA_Attributes_full.txt",
@@ -761,8 +762,9 @@ processTumorStage <- function(df){  #expects  1 row of 2 col df:
    
    stage = unlist(df[2])
    for(id in unlist(strsplit(df[1], ";"))){
-      if(grepl("01[ABZ]$", id)){                 # filter our healthy samples
-         stageHealthy <<- rbind(stageHealthy, cbind(id, "healthy"))
+      if(grepl("10[ABZ]$", id) | grepl("11[ABZ]", id)){  # filter our healthy samples  --- BACKWARDS 01 is cancer!
+         #stageHealthy <<- rbind(stageHealthy, cbind(id, "healthy"))
+         stageHealthy <<- rbind(stageHealthy, appendDFtumor(id, stage="healthy"))
       }
       else{    
          if(grepl("stage i[ab]", stage) | grepl("stage i$", stage)){
@@ -776,7 +778,7 @@ processTumorStage <- function(df){  #expects  1 row of 2 col df:
          else if(grepl("stage x", stage) | grepl("not reported", stage)){
             stageUnknown <<- rbind(stageUnknown, cbind(id, stage))}
          else{
-            print(c(id, stage, "missing class"))
+             # print(c(id, stage, "missing class")) # all accounted for
          }
       }
    }
@@ -784,8 +786,74 @@ processTumorStage <- function(df){  #expects  1 row of 2 col df:
 ########################################
 
 
-apply(TCGA_ID_Stage, 1, processTumorStage)
+apply(TCGA_ID_Stage, 1, processTumorStage)      # WARNING--there is an amplification due to last-letter
 # rownames very ugly and not helpful!
+
+# some code determining if there is more than 1 sample per class from 1 individual
+
+
+
+# read huge TCGA file in, then for each stage of "unused" rows, grab the 
+# file of data, create new dataframe, and save to disk for future use
+toilData <- read.table("/Users/mjk/RNA-Seq_2019/TOIL_Data/TcgaTargetGtex_gene_expected_count", 
+                       header=TRUE, stringsAsFactors = FALSE)
+head(colnames(toilData))
+toilSampleNames <- as.character(toilSampleNames)
+
+stageOneIDs <- stageOne %>% filter(novel=="unused") %>% select(id) %>% 
+   {gsub("[ABZC]$", "", stageOne$id, perl=TRUE)} %>% unique()   # 188 long
+
+stageTwoIDs <- stageTwo %>% filter(novel=="unused") %>% select(id) %>% 
+   {gsub("[ABZC]$", "", stageTwo$id, perl=TRUE)} %>% unique()   # 632 long
+
+stageThreeIDs <- stageThree %>% filter(novel=="unused") %>% select(id) %>% 
+   {gsub("[ABZC]$", "", stageThree$id, perl=TRUE)} %>% unique()   # 251 long
+
+stageFourIDs <- stageFour %>% filter(novel=="unused") %>% select(id) %>% 
+   {gsub("[ABZC]$", "", stageFour$id, perl=TRUE)} %>% unique()   # 20 long
+
+stageHealthyIDs <- stageHealthy %>% filter(novel=="unused") %>% select(id) %>% 
+   {gsub("[ABZC]$", "", stageHealthy$id, perl=TRUE)} %>% unique()   # 1161 long ??????
+### NOTE THAT THERE IS A FULL EXPANSION OF ALL TISSUE SAMPLES DERIVED FROM A PERSON
+### IN THE DATASET, BUT MANY OF THESE SAMPLES WILL NOT BE PART OF THE TCGA DATASET
+
+### ALSO NOTE THAT I'M GETTING A LOT MORE SAMPLES THAN EXPECTED BECAUSE I'M NOT 
+### IMPOSING THE WANG QA FILTERS, AND I'M GRABBING ALL SAMPLES--but some of that
+### is controlled when matching up with toilData dataframe:
+### I'm also transposing the dataframes here as well:
+stageOneDF <- t(toilData[,which(toilSampleNames %in% stageOneIDs)])          # 182 smpls
+stageTwoDF <- t(toilData[,which(toilSampleNames %in% stageTwoIDs)])          # 622
+stageThreeDF <- t(toilData[,which(toilSampleNames %in% stageThreeIDs)])      # 250
+stageFourDF <- t(toilData[,which(toilSampleNames %in% stageFourIDs)])        #  20
+stageHealthyDF <- t(toilData[,which(toilSampleNames %in% stageHealthyIDs)])  # 113
+
+### add gene names, as done above:
+colnames(stageOneDF) <- colnames(toilTrainNat)
+colnames(stageTwoDF) <- colnames(toilTrainNat)
+colnames(stageThreeDF) <- colnames(toilTrainNat)
+colnames(stageFourDF) <- colnames(toilTrainNat)
+colnames(stageHealthyDF) <- colnames(toilTrainNat)
+
+# now write these DF to files for future use!
+write.table(stageOneDF, "stageOneTest.txt", sep="\t", row.names = TRUE)
+write.table(stageTwoDF, "stageTwoTest.txt", sep="\t", row.names = TRUE)
+write.table(stageThreeDF, "stageThreeTest.txt", sep="\t", row.names = TRUE)
+write.table(stageFourDF, "stageFourTest.txt", sep="\t", row.names = TRUE)
+write.table(stageHealthyDF, "stageHealthyTest.txt", sep="\t", row.names = TRUE)
+
+################################################## comment out lines of code above.
+
+stageOneDF <- read.csv("stageOneTest.txt", header=TRUE, sep="\t",
+           stringsAsFactors = FALSE)
+# REPEAT
+
+
+# Next: filter, normalize, etc. Perform all-test groups separately from one another
+# and separately from training set.
+
+
+
+
 ```
 
 
