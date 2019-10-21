@@ -16,6 +16,8 @@ The *markdown* and *html* versions of this document have some of the code masked
 ```{r setup, include=FALSE}
 knitr::opts_chunk$set(echo = TRUE)
 require(matrixStats)
+require(magrittr)
+require(gridExtra)
 
 ######## FUNCTIONS NOT TO BE PRINTED IN MARKDOWN DOC:
 scaleData <- function(DM, MEAN=TRUE, ROW=FALSE){
@@ -86,7 +88,7 @@ wangSelectedSamples <- colnames(wangMatrix)
 wangTCGAsamples <- wangSelectedSamples[grep("^TCGA", wangSelectedSamples)] %>%
    {gsub("\\.", "-", .)} %>% 
    {gsub("([TCGA]-[^-]+[-][^-]+[-][^-]+)[-].*", "\\1", .)} %>% 
-   {gsub("[AB]$", "", .)}
+   {gsub("[ABCZ]$", "", .)}
 
 wangGTEXsamples <- wangSelectedSamples[grep("^GTEX", wangSelectedSamples)] %>%
    {gsub("\\.", "-", .)}
@@ -206,7 +208,7 @@ Next, we select a reference sample within the training set and relative to that 
 
 #### 1. Removing genes whose expression is very close to zero.  
 We know that there are about 9103 genes that are never expressed (data not shown), but there are over 25000 genes whose 75th quantile-level expression is under 2^(0.2) - 1 = 0.14 counts. We really don't want to deal with those genes in selecting a reference sample, etc.
-```{r}
+```{r, fig.height=5, fig.width=5, dpi=300}
 hist(apply(toilTrain, 2, function(x) quantile(x)[4]), breaks=100, main="Histogram of gene's 75th quantile of expression.", xlab="log2(Est Counts)")
 ```
 We are going to filter out genes whose 75th quantile across 287 samples is less than 0.14 counts (log2(counts) < 0.2).
@@ -279,15 +281,28 @@ weightedTrimmedMean <- function(refSample, testSample, refName, testName, testSm
    smpLog <- log2(testSampleFilt)
 
    M <- refLog - smpLog           # ref sample in numerator
-   A <- 0.5 * (refLog + smpLog)   
+   A <- 0.5 * (refLog + smpLog) 
+   
+   # print for KeyNote figure:
+   # require(ggplot2)
+   # df00 <- data.frame(cbind(A, M))
+   # print(ggplot(df00, aes(x=A, y=M)) +
+   #    geom_point(colour="blue", size=0.5) +
+   #    theme_bw() + ylim(-12,12))
+   
    
    # grab middle 40% of M and middle 90% of A
    M_limits <- quantile(M, probs = seq(0,1,0.05))[c(7,15)]  # diagnostic
    A_limits <- quantile(A, probs = seq(0,1,0.05))[c(2,20)]  # diagnostic
    
+   # show how many points are between each of these quantiles (plot doesn't give)
+   #hist(A, breaks = A_limits)#, xlim=c(-5,5)) # NEED WHOLE RANGE OF M_limits, A_limits for this to work.
+   
+   # QA:
+   # print(c(M_limits, A_limits))
+   
    A_middle90 <- names(A[(A >= A_limits[1] & A <= A_limits[2]) == TRUE])
    M_middle40 <- names(M[(M >= M_limits[1] & M <= M_limits[2]) == TRUE])
-   
    
    # grab genes names in intersection of A_middle90 and M_middle40
    genes4norm <- dplyr::intersect(A_middle90, M_middle40)
@@ -315,11 +330,16 @@ weightedTrimmedMean <- function(refSample, testSample, refName, testName, testSm
    RefProd <- Nr * refSelectNat
    TestProd <- Nk * testSelectNat
    weights <- (RefDiff/RefProd) + (TestDiff/TestProd)
+   
+   # for keynote presentation:
+   # df01 <- data.frame(cbind(x=log2(refSelectNat), weight=RefDiff/RefProd))
+   # print(ggplot(df01, aes(x=x,y=weight)) +
+   #    geom_point() + theme_bw())
 
    # calculate Trimmed Mean scaling factor
-   TMM_log2 <- sum(M_norm * weights)/sum(weights)   # some NaN here
+   TMM_log2 <- sum(M_norm * weights)/sum(weights)                # some NaN here
    TMM <- 2^TMM_log2
-   return(TMM)
+   return(TMM)                  # returns a single scaling factor for testSample
 }
 ```
 #### 3. go through each sample in training set and get scaling factor
@@ -379,7 +399,7 @@ I'd like to compare the t-SNE plot to one using the 1st and 2nd principal compon
 I'll quickly scale the data first, as PCA requires that.  
 ```{r}
 trainScaled <- scaleData(toilTrainFiltScaled, TRUE, FALSE)
-PCs <- prcomp(trainScaled)
+PCs <- prcomp(trainScaled)                               # (data already scaled)
 nComp <- 2
 dfComponents <- predict(PCs, newdata=trainScaled)[,1:nComp]
 PC_plot <- data.frame(x=dfComponents[,1], y = dfComponents[,2], col=prognosis)
@@ -388,6 +408,7 @@ colors3pal <- c("#FDAE6B", "#E6550D",  "#56B4E9")
 ggplot(PC_plot) + 
    geom_point(aes(x=x, y=y, color=as.factor(col))) + 
    ggtitle("PCA Plot of Training Data Using All Filtered Predictors of Toil Training Data") +
+   xlab("PC1") + ylab("PC2") +
    scale_color_manual(name="Category",
                       breaks = c("1", "2", "3"),
                       values = c(colors3pal[1], colors3pal[2], colors3pal[3]),
@@ -395,6 +416,21 @@ ggplot(PC_plot) +
 ```
   
 Again, the healthy samples partition well from the tumors.  And again, GTEX-healthy and TCGA-healthy are in distict clusters, showing that a batch effect still persists.  However, not addressing the batch effect allows us to either (a) keep the test set entirely separated from the training set through this entire procedure (one the data are split in step 1 above) or (b) process a single test sample without using other test samples for normalization.  
+
+### Relative Importance of Principal Components
+Let's look at the fraction of overall variance explained by each of the principal components:
+```{r}
+# shouldn't this be done at the level of the predictors?  (the genes)  this is all sample-based right now!
+
+names(PCs)
+df02 <- data.frame(idx=numeric(), cumVar=numeric())
+for(idx in 1:length(PCs$sdev)){
+   df02 <- rbind(df02, cbind(idx, cumVar=sum(I(PCs$sdev[1:idx])^2) / sum(I(PCs$sdev)^2)))
+}
+ggplot(df02, aes(x=idx, y=cumVar)) +
+   geom_point() + ylim(0,1) + xlab("Principal Component") + ylab("Cumulative Variance") +
+   theme_bw()
+```
 
 ### Logistic Regression with Lasso Regularizer on Toil Data
 I'd like to compare the performance on this breast cancer dataset in the absence of batch normalization (ComBat).
@@ -433,7 +469,7 @@ require(biomaRt)
 coefsToil <- coef(fitToil.lasso, s=cv.Toil.lasso$lambda.1se)
 allCoefsNames <- rownames(coefsToil)
 idx <- which(coefsToil!= 0)
-coefsFullNames <- allCoefsNames[idx]
+coefsFullNames <- allCoefsNames[idx]                     # USED EXTENSIVELY BELOW
 
 coefsToilNonZero <- coefsToil[which(coefsToil!= 0)]
 #class(coefsToilNonZero)                 #### get to sort numerically based on abs value, desc
@@ -538,6 +574,62 @@ if(FALSE){
 ```
 when performing predictions, we'll need *coefsFullNames* and *coefsToilNonZero*.
 Remember when looking at these Lasso-Regularized Coefficients that each predictor gene was offset by its mean and scaled by its standard deviation.  That way, lower and more highly transcribed genes are on equal footing to influence the model.
+
+### Plotting Gene Expression Values Across Diagnosis for Predictor Genes
+```{r, fig.height=8, fig.width=8}
+jitterPlot3var2 <- function(df, var1, var2, var3, titl, pal){
+   obj <- ggplot(df, aes(df[,var1], df[,var2]), colour=as.factor(df[,var3]))+ #as.factor() 
+   geom_jitter(aes(col=as.factor(df[,var3])),size=1.0, height=0.3) +   #as.factor() needed
+      scale_color_manual(name="Category",
+                      breaks = c("1", "2", "3"),
+                      values = pal,
+                      labels = c("Healthy-GTEX", "Healthy-TCGA", "Cancer-TCGA")) +
+   ggtitle(titl) + xlab(var1) + ylab(var2)
+   theme(plot.title = element_text(size = 8, hjust=0.5)) +
+   theme(axis.title = element_text(size = 6, hjust=0.5));
+   return(obj)
+}
+
+predictors42scaled <- toilTrainFiltScaledSD[,colnames(toilTrainFiltScaledSD) %in% coefsFullNames]
+
+sampleNames <- rownames(predictors42scaled)
+c3vect <- c(rep(0, length(sampleNames)))
+c3vect <- grepl("^GTEX", sampleNames) + c3vect
+c3vect <- c3vect + 2*(grepl("^TCGA", sampleNames) &
+                      grepl("\\.11$", sampleNames, perl=TRUE))
+c3vect <- c3vect + 3*(grepl("^TCGA", sampleNames) &
+                      grepl("\\.01$", sampleNames, perl=TRUE))
+
+geneNames <- colnames(predictors42scaled)
+
+ls <- list()
+for(i in 1:6){
+   geneValues <- cbind(c(rep(0, 139), rep(1, 148)), predictors42scaled[i,], c3vect)
+   colnames(geneValues) <- c("diagnosis", "log2FPKM", "class")
+   ls[[i]] <- jitterPlot3var2(data.frame(geneValues), "diagnosis", 
+                  "log2FPKM", "class", geneNames[i], colors3pal)
+}
+grid.arrange(ls[[1]], ls[[2]], ls[[3]], ls[[4]], ls[[5]], ls[[6]], ncol=2)
+```
+### Plotting PC2 vs Predictors
+As it appears that PC2 separates healthy / tumor samples better than PC1, I'll plot a few important predictors against PC2
+```{r, fig.height=8, fig.width=8}
+colors3pal <- c("#FDAE6B", "#E6550D",  "#56B4E9")
+ls <- list()
+for(i in 1:6){
+   PC_vs_Predictors <- data.frame(x = dfComponents[,2], y = predictors42scaled[,i],col=prognosis)
+   correlation <- cor(PC_vs_Predictors$x, PC_vs_Predictors$y)
+   ls[[i]] <- (ggplot(PC_vs_Predictors) + 
+      geom_point(aes(x=x, y=y, color=as.factor(col))) + 
+      ggtitle(paste0("Plotting ",geneNames[i]," against PC2 with CORR = ", correlation)) +
+      xlab("PC2") + ylab(geneNames[i]) +
+      scale_color_manual(name="Category",
+                         breaks = c("1", "2", "3"),
+                         values = c(colors3pal[1], colors3pal[2], colors3pal[3]),
+                         labels = c("Healthy-GTEX", "Healthy-TCGA", "Cancer-TCGA")));
+}
+grid.arrange(ls[[1]], ls[[2]], ls[[3]], ls[[4]], ls[[5]], ls[[6]], ncol=2)
+```
 
 ### Filter and Scale Test Data.  (A) Relying on Training Data for Zero-Filtering and Scaling of Test Data
 ```{r}
@@ -727,21 +819,22 @@ I'll grab all TCGA sample names, remove those that have already been used in thi
 either as training or test samples, and then group the data by tumor stage.  
 *I am not limiting this set to the Wang subset*
 ```{r}
+require(BBmisc)
 # read in TCGA attribute file:
 TCGA_Attr_Full <- read.csv("~/Desktop/Tresorit_iOS/projects/RNA-Seq/data/TCGA_Attributes_full.txt",
          header=TRUE, sep="\t", stringsAsFactors = FALSE)
-TCGA_ID_Stage <- TCGA_Attr_Full %>% select(tcgaID, tumor_stage)
+TCGA_ID_Stage <- TCGA_Attr_Full %>% dplyr::select(tcgaID, tumor_stage)
 rm(TCGA_Attr_Full)
 
 # grab all TCGA IDs already used--already created as wangTCGAsamples
 # there's also a toilSampleNames object as well.  # NOTE THAT FINAL LETTER STRIPPED OFF
 
 # initialize six tumor stage dataframes
-stageOne <- data.frame(tcgaID=character(), stage=character(), novel=character)
-stageTwo <- data.frame(tcgaID=character(), stage=character(), novel=character)
-stageThree <- data.frame(tcgaID=character(), stage=character(), novel=character)
-stageFour <- data.frame(tcgaID=character(), stage=character(), novel=character)
-stageZero <- data.frame(tcgaID=character(), stage=character(), novel=character)
+stageOne <- data.frame(tcgaID=character(), stage=character(), novel=character())
+stageTwo <- data.frame(tcgaID=character(), stage=character(), novel=character())
+stageThree <- data.frame(tcgaID=character(), stage=character(), novel=character())
+stageFour <- data.frame(tcgaID=character(), stage=character(), novel=character())
+stageZero <- data.frame(tcgaID=character(), stage=character(), novel=character())
 stageHealthy <- data.frame(tcgaID=character(), stage=character())
 stageUnknown <- data.frame(tcgaID=character(), stage=character())
 
@@ -791,41 +884,43 @@ apply(TCGA_ID_Stage, 1, processTumorStage)      # WARNING--there is an amplifica
 
 # some code determining if there is more than 1 sample per class from 1 individual
 
-
-
 # read huge TCGA file in, then for each stage of "unused" rows, grab the 
 # file of data, create new dataframe, and save to disk for future use
+# also convert TCGA IDs using dots (.) rather than dashes(-)
+# BUGS in this section now fixed.
 toilData <- read.table("/Users/mjk/RNA-Seq_2019/TOIL_Data/TcgaTargetGtex_gene_expected_count", 
                        header=TRUE, stringsAsFactors = FALSE)
-head(colnames(toilData))
-toilSampleNames <- as.character(toilSampleNames)
+toilSampleNames <- as.character(colnames(toilData))
 
-stageOneIDs <- stageOne %>% filter(novel=="unused") %>% select(id) %>% 
-   {gsub("[ABZC]$", "", stageOne$id, perl=TRUE)} %>% unique()   # 188 long
+stageOneIDs <- (stageOne %>% dplyr::filter(novel=="unused") %>% dplyr::select(id) %>% 
+                convertColsToList())[[1]] %>% {gsub("[ABZC]$", "", .)} %>%      
+   {gsub("-", "\\.", .)} %>% unique()   # 153 long
 
-stageTwoIDs <- stageTwo %>% filter(novel=="unused") %>% select(id) %>% 
-   {gsub("[ABZC]$", "", stageTwo$id, perl=TRUE)} %>% unique()   # 632 long
+stageTwoIDs <- (stageTwo %>% dplyr::filter(novel=="unused") %>% dplyr::select(id) %>% 
+                convertColsToList())[[1]] %>% {gsub("[ABZC]$", "", .)} %>% 
+   {gsub("-", "\\.", .)} %>% unique()   # 523 long
 
-stageThreeIDs <- stageThree %>% filter(novel=="unused") %>% select(id) %>% 
-   {gsub("[ABZC]$", "", stageThree$id, perl=TRUE)} %>% unique()   # 251 long
+stageThreeIDs <- (stageThree %>% dplyr::filter(novel=="unused") %>% dplyr::select(id) %>% 
+                convertColsToList())[[1]] %>% {gsub("[ABZC]$", "", .)} %>% 
+   {gsub("-", "\\.", .)} %>% unique()   # 203 long
 
-stageFourIDs <- stageFour %>% filter(novel=="unused") %>% select(id) %>% 
-   {gsub("[ABZC]$", "", stageFour$id, perl=TRUE)} %>% unique()   # 20 long
+stageFourIDs <- (stageFour %>% dplyr::filter(novel=="unused") %>% dplyr::select(id) %>% 
+                convertColsToList())[[1]] %>% {gsub("[ABZC]$", "", .)} %>% 
+   {gsub("-", "\\.", .)} %>% unique()   # 20 long
 
-stageHealthyIDs <- stageHealthy %>% filter(novel=="unused") %>% select(id) %>% 
-   {gsub("[ABZC]$", "", stageHealthy$id, perl=TRUE)} %>% unique()   # 1161 long ??????
-### NOTE THAT THERE IS A FULL EXPANSION OF ALL TISSUE SAMPLES DERIVED FROM A PERSON
-### IN THE DATASET, BUT MANY OF THESE SAMPLES WILL NOT BE PART OF THE TCGA DATASET
+stageHealthyIDs <- (stageHealthy %>% dplyr::filter(novel=="unused") %>% dplyr::select(id) %>% 
+                convertColsToList())[[1]] %>% {gsub("[ABZC]$", "", .)} %>% 
+   {gsub("-", "\\.", .)} %>% unique()   # 1052 long ??????
 
-### ALSO NOTE THAT I'M GETTING A LOT MORE SAMPLES THAN EXPECTED BECAUSE I'M NOT 
-### IMPOSING THE WANG QA FILTERS, AND I'M GRABBING ALL SAMPLES--but some of that
-### is controlled when matching up with toilData dataframe:
+
+### Now grab the actual data, now that we've separated tumors by stage and filtered out
+### training samples and early-used test samples:
 ### I'm also transposing the dataframes here as well:
-stageOneDF <- t(toilData[,which(toilSampleNames %in% stageOneIDs)])          # 182 smpls
-stageTwoDF <- t(toilData[,which(toilSampleNames %in% stageTwoIDs)])          # 622
-stageThreeDF <- t(toilData[,which(toilSampleNames %in% stageThreeIDs)])      # 250
+stageOneDF <- t(toilData[,which(toilSampleNames %in% stageOneIDs)])          # 147 smpls
+stageTwoDF <- t(toilData[,which(toilSampleNames %in% stageTwoIDs)])          # 514
+stageThreeDF <- t(toilData[,which(toilSampleNames %in% stageThreeIDs)])      # 203
 stageFourDF <- t(toilData[,which(toilSampleNames %in% stageFourIDs)])        #  20
-stageHealthyDF <- t(toilData[,which(toilSampleNames %in% stageHealthyIDs)])  # 113
+stageHealthyDF <- t(toilData[,which(toilSampleNames %in% stageHealthyIDs)])  #   4 --most not in TOIL
 
 ### add gene names, as done above:
 colnames(stageOneDF) <- colnames(toilTrainNat)
@@ -833,6 +928,7 @@ colnames(stageTwoDF) <- colnames(toilTrainNat)
 colnames(stageThreeDF) <- colnames(toilTrainNat)
 colnames(stageFourDF) <- colnames(toilTrainNat)
 colnames(stageHealthyDF) <- colnames(toilTrainNat)
+
 
 # now write these DF to files for future use!
 write.table(stageOneDF, "stageOneTest.txt", sep="\t", row.names = TRUE)
@@ -878,9 +974,9 @@ stageFourNat <- (2^stageFourDF)-1    # natural scale
 zeroExpGenes <- which(apply(stageFourDF, 2, function(x) quantile(x)[4]) < 0.2)    
 stageFourFilter <- stageFourNat[,-zeroExpGenes]
 
-stageHealthNat <- (2^stageHealthyDF)-1    # natural scale
+stageHealthyNat <- (2^stageHealthyDF)-1    # natural scale
 zeroExpGenes <- which(apply(stageHealthyDF, 2, function(x) quantile(x)[4]) < 0.2)    
-stageHealthFilter <- stageHealthNat[,-zeroExpGenes]
+stageHealthyFilter <- stageHealthyNat[,-zeroExpGenes]
 ```
 ### 2. Select a Reference Sample Amongst Test Samples for Scaling Data
 ```{r}
@@ -909,11 +1005,36 @@ stageOneRefName = retVector[[1]]           # re-write whole thing using objects 
 stageOneFraction = retVector[[2]]
 stageOneRefSample = retVector[[3]]
 stageOneRefSampleUnscaled = retVector[[4]]
+
+retVector <- refSampleWrapper(stageTwoFilter)
+stageTwoRefName = retVector[[1]]           # re-write whole thing using objects later
+stageTwoFraction = retVector[[2]]
+stageTwoRefSample = retVector[[3]]
+stageTwoRefSampleUnscaled = retVector[[4]]
+
+retVector <- refSampleWrapper(stageThreeFilter)
+stageThreeRefName = retVector[[1]]           # re-write whole thing using objects later
+stageThreeFraction = retVector[[2]]
+stageThreeRefSample = retVector[[3]]
+stageThreeRefSampleUnscaled = retVector[[4]]
+
+retVector <- refSampleWrapper(stageFourFilter)
+stageFourRefName = retVector[[1]]           # re-write whole thing using objects later
+stageFourFraction = retVector[[2]]
+stageFourRefSample = retVector[[3]]
+stageFourRefSampleUnscaled = retVector[[4]]
+
+retVector <- refSampleWrapper(stageHealthyFilter)
+stageHealthyRefName = retVector[[1]]           # re-write whole thing using objects later
+stageHealthyFraction = retVector[[2]]
+stageHealthyRefSample = retVector[[3]]
+stageHealthyRefSampleUnscaled = retVector[[4]]
 ```
 
 ### 3. Scaling Test Samples Relative to the Chosen TEST Reference Sample (Sample-to-Sample Normalization)
 
 ```{r}
+require(ggplot2)
 # The calcScalingFactors function calculates a scaling factor for each sample in
 # the fraction dataframe.  It calls weightedTrimmedMean of edgeR.
 calcScalingFactors <- function(dfFiltered, dfScaled, refSample, refName,
@@ -935,28 +1056,331 @@ calcScalingFactors <- function(dfFiltered, dfScaled, refSample, refName,
 
 stageOneSFs <- calcScalingFactors(stageOneFilter, stageOneFraction, stageOneRefSample,
                                   stageOneRefName, stageOneRefSampleUnscaled)
-
+stageTwoSFs <- calcScalingFactors(stageTwoFilter, stageTwoFraction, stageTwoRefSample,
+                                  stageTwoRefName, stageTwoRefSampleUnscaled)
+stageThreeSFs <- calcScalingFactors(stageThreeFilter, stageThreeFraction, stageThreeRefSample,
+                                  stageThreeRefName, stageThreeRefSampleUnscaled)
+stageFourSFs <- calcScalingFactors(stageFourFilter, stageFourFraction, stageFourRefSample,
+                                  stageFourRefName, stageFourRefSampleUnscaled)
+stageHealthySFs <- calcScalingFactors(stageHealthyFilter, stageHealthyFraction, stageHealthyRefSample,
+                                  stageHealthyRefName, stageHealthyRefSampleUnscaled)
 
 
 ### Scale toilTrainFilter matrix using scaling factors
-# dim(toilTestFilter)
+
 stageOneFiltScaled <- apply(stageOneFilter, 2, function(x) x/stageOneSFs)
+stageTwoFiltScaled <- apply(stageTwoFilter, 2, function(x) x/stageTwoSFs)
+stageThreeFiltScaled <- apply(stageThreeFilter, 2, function(x) x/stageThreeSFs)
+stageFourFiltScaled <- apply(stageFourFilter, 2, function(x) x/stageFourSFs)
+stageHealthyFiltScaled <- apply(stageHealthyFilter, 2, function(x) x/stageHealthySFs)
 ### we now have a scaled test matrix
 ```
 ### 4. Remove Non-Predictor Genes from Filtered Test Data
 We're just keeping the 42 predictors from toilTestFiltScaled
 ```{r}
-toilTestFiltScal42 <- toilTestFiltScaled[,coefsFullNames[2:length(coefsFullNames)]]
+stageOneFiltScal42 <- stageOneFiltScaled[,coefsFullNames[2:length(coefsFullNames)]]
+stageTwoFiltScal42 <- stageTwoFiltScaled[,coefsFullNames[2:length(coefsFullNames)]]
+stageThreeFiltScal42 <- stageThreeFiltScaled[,coefsFullNames[2:length(coefsFullNames)]]
+stageFourFiltScal42 <- stageFourFiltScaled[,coefsFullNames[2:length(coefsFullNames)]]
+stageHealthyFiltScal42 <- stageHealthyFiltScaled[,coefsFullNames[2:length(coefsFullNames)]]
 ```
 ### 5. Each Relevant Predictor Gene offset by Its Mean and Scaled by Its Standard Deviation
 ```{r}
-toilTestFiltScaledSD <- scaleData(toilTestFiltScal42, TRUE, FALSE)       
 # this would not be possible for individual samples!!!!!!
-toilTestFiltScaledSD <- cbind(rep(1,dim(toilTestFiltScaledSD)[1]), toilTestFiltScaledSD)
+stageOneFiltScaledSD <- scaleData(stageOneFiltScal42, TRUE, FALSE)       
+stageOneFiltScaledSD <- cbind(rep(1,dim(stageOneFiltScaledSD)[1]), stageOneFiltScaledSD) #add intercept term
+stageTwoFiltScaledSD <- scaleData(stageTwoFiltScal42, TRUE, FALSE)       
+stageTwoFiltScaledSD <- cbind(rep(1,dim(stageTwoFiltScaledSD)[1]), stageTwoFiltScaledSD) #add intercept term
+stageThreeFiltScaledSD <- scaleData(stageThreeFiltScal42, TRUE, FALSE)       
+stageThreeFiltScaledSD <- cbind(rep(1,dim(stageThreeFiltScaledSD)[1]), stageThreeFiltScaledSD) #add intercept term
+stageFourFiltScaledSD <- scaleData(stageFourFiltScal42, TRUE, FALSE)       
+stageFourFiltScaledSD <- cbind(rep(1,dim(stageFourFiltScaledSD)[1]), stageFourFiltScaledSD) #add intercept term
+stageHealthyFiltScaledSD <- scaleData(stageHealthyFiltScal42, TRUE, FALSE)       
+stageHealthyFiltScaledSD <- cbind(rep(1,dim(stageHealthyFiltScaledSD)[1]), stageHealthyFiltScaledSD) #add intercept term
 ```
 ### Create Confusion Matrix for Test Data
 
 ```{r}
-testPredictions_toil <- ifelse(toilTestFiltScaledSD %*% coefsToilNonZero > 0, 1, 0)
-table(outcomeTest, testPredictions_toil)
+testPredictions_toil <- ifelse(stageOneFiltScaledSD %*% coefsToilNonZero > 0, 1, 0)
+table(stageOneOutcome, testPredictions_toil)
 ```
+```{r}
+testPredictions_toil <- ifelse(stageTwoFiltScaledSD %*% coefsToilNonZero > 0, 1, 0)
+table(stageTwoOutcome, testPredictions_toil)
+```
+```{r}
+testPredictions_toil <- ifelse(stageThreeFiltScaledSD %*% coefsToilNonZero > 0, 1, 0)
+table(stageThreeOutcome, testPredictions_toil)
+```
+```{r}
+testPredictions_toil <- ifelse(stageFourFiltScaledSD %*% coefsToilNonZero > 0, 1, 0)
+table(stageFourOutcome, testPredictions_toil)
+```
+```{r}
+testPredictions_toil <- ifelse(stageHealthyFiltScaledSD %*% coefsToilNonZero > 0, 1, 0)
+table(stageHealthyOutcome, testPredictions_toil)
+```
+As we can see, the performance is quite poor.  This could either be the result of normalizing
+normal and cancer samples separately, or it could be because there's a lot of poor quality
+samples that were filtered out by Wang, et. al, and while that was done at the ComBat
+stage, I used the Wang sample list to filter out Toil sample up until this point.  If the issue is normalizing samples separately, then this should be fixable by just normalizing relative to the REFSAMPLE and ZEROEXPGENES that were defined at the top of this document and used in part (A) 
+
+COULD ALSO COLOR REFERENCE SAMPLE IN TSNE AND PCA PLOTS
+
+### Trial 1: Normalize stageThree with REFSAMPLE defined way at the top:
+The REFSAMPLE obtained from the TRAINING SET, along with its associated data, as well
+as the ZEROEXPGENES, those genes with virtually no expression in the TRAINING set, will be used
+to normalize the "stage 3" tumor samples and healthy samples together to see if it recovers
+the lost performance just seen in the TCGA set.
+```{r}
+# from before: ZEROEXPGENES REFNAME REFSAMPLE REFSAMPLEUNSCALED 
+
+# 1. merge together stage 3 and healthy from TCGA:
+dim(stageThreeDF)
+healthy3df <- rbind(stageHealthyDF, stageThreeDF)
+healthy3dfOutcome <- c(rep(0, dim(stageHealthyDF)[1]), rep(1, dim(stageThreeDF)[1]))
+
+# 1b. convert to natural scale:
+healthy3Nat <- (2^healthy3df)-1    # natural scale
+
+# 2. subtract out ZEROEXPGENES, as defined in training set
+healthy3NatFilt <- healthy3Nat[,-ZEROEXPGENES]
+
+# 2b. represent intensities as fraction of all signals in each sample
+N <- apply(healthy3NatFilt, 1, sum)
+healthy3FiltFrac <- apply(healthy3NatFilt, 2, function(x) x / N)
+
+# 3. Calculate scaling factor, relative to REFSAMPLE, for each sample in healthy3...
+healthy3SFs <- calcScalingFactors(healthy3NatFilt, healthy3FiltFrac, REFSAMPLE,
+                                  REFNAME, REFSAMPLEUNSCALED)
+
+# 3b. Apply scaling factors
+healthy3FiltScaled <- apply(healthy3NatFilt, 2, function(x) x/healthy3SFs)
+
+# 4. Remove Non-Predictor Genes from Filtered Test Data, then add intercept.
+# We're just keeping the 42 predictors from toilTestFiltScaled
+healthy3FiltScal42 <- healthy3FiltScaled[,coefsFullNames[2:length(coefsFullNames)]]
+
+# 5. scale each gene by its stdev and offset by its mean
+healthy3FiltScaledSD <- scaleData(healthy3FiltScal42, TRUE, FALSE)       
+healthy3FiltScaledSD <- cbind(rep(1,dim(healthy3FiltScaledSD)[1]), healthy3FiltScaledSD) #add intercept term
+
+# Create Confusion Matrix for Test Data
+testPredictions_toil <- ifelse(healthy3FiltScaledSD %*% coefsToilNonZero > 0, 1, 0)
+table(healthy3dfOutcome, testPredictions_toil)
+
+```
+My performance is much, much better!  96% sensitivity and 100% specificity!!
+
+#### Conclusions:  
+1. From the test just performed, whatever Wang quality filtering that was done must have a minor effect (4% on sensitivity).  
+2. That EITHER the *training* REFSAMPLE or the fact that tumor and normal samples were normalized together, or both, largely recovered the earlier performance.
+
+
+### Trial 2: Mix healthy and stage 3 and normalize together.
+Here, I'm going to try to see if the TEST samples alone (healthy and stage3) can both (a) determine the effectively-not expressed genes, (b) find their own mutual reference sample, and (c) perform well on the logist regression model with lasso regularizer.  
+```{r}
+# We'll start with the merged dataframe in the natural scale above:
+
+# 1. Determine which are the genes that are essentially zero-expression in log scale:
+zeroExpGenes <- which(apply(healthy3df, 2, function(x) quantile(x)[4]) < 0.2)    
+
+# 2. subtract out ZEROEXPGENES, as defined in training set
+healthy3NatFilt <- healthy3Nat[,-zeroExpGenes]
+# healthy3NatFilt <- healthy3Nat[,-ZEROEXPGENES]
+
+# 2b. represent intensities as fraction of all signals in each sample
+# N <- apply(healthy3NatFilt, 1, sum)    NO, DONE AS PART OF REFSAMPLEWRAPPER
+# healthy3FiltFrac <- apply(healthy3NatFilt, 2, function(x) x / N)
+
+# 3a. Choose reference sample amongst the healthy-stage3 test dataframe samples:
+retVector <- refSampleWrapper(healthy3NatFilt)
+healthy3RefName = retVector[[1]]
+healthy3NatFiltFrac = retVector[[2]]
+healthy3RefSample = retVector[[3]]
+healthy3RefSampleUnscaled = retVector[[4]]
+
+# 3b. Calculate scaling factors for heathy3NatFilt dataframe samples:
+healthy3SFs <- calcScalingFactors(healthy3NatFilt, healthy3NatFiltFrac, healthy3RefSample,
+                                  healthy3RefName, healthy3RefSampleUnscaled)
+
+# 3c. scale each sample in the healthy3NatFilt dataframe
+healthy3FiltScaled <- apply(healthy3NatFilt, 2, function(x) x/healthy3SFs)
+
+# 4. # 4. Remove Non-Predictor Genes from Filtered Test Data
+healthy3FiltScal42 <- healthy3FiltScaled[,coefsFullNames[2:length(coefsFullNames)]]
+
+# 5. scale each gene by its stdev and offset by its mean
+healthy3FiltScaledSD <- scaleData(healthy3FiltScal42, TRUE, FALSE)       
+healthy3FiltScaledSD <- cbind(rep(1,dim(healthy3FiltScaledSD)[1]), healthy3FiltScaledSD) #add intercept term
+
+# Create Confusion Matrix for Test Data
+testPredictions_toil <- ifelse(healthy3FiltScaledSD %*% coefsToilNonZero > 0, 1, 0)
+table(healthy3dfOutcome, testPredictions_toil)
+```
+I get the same 96% sensitivity and 100% specificity as using the *training* REFSAMPLE and ZEROEXPGENES!
+MANY OF THESE SAMPLES ARE ACTUALLY IN THE TRAINING SET!!
+
+##### Conclusion:  
+It appears that the essential part is that I have a mixture of healthy and tumors when going through the filtering, scaling and normalization steps (or at least one of them).  That does not rule out the possibility that a block of tumor-only samples might perform well if done relative to the REFSAMPLE and ZEROEXPGENES.
+
+##### To do: 
+1. Check if the false negatives failed to be amongst the Wang set.  DONE
+2. Check if a solid, pure group performs well with the training REFSAMPLE and ZEROEXPGENES
+3. I want to see how the other stage cancers perform.
+4. Since I always scale and center across each gene, do I rely on training set for that?, and
+might that be better given that I no longer have 50/50 healthy/tumor?
+5. It would also be interesting to color the PCA plot by the samples that did not correctly predict.
+6. Plot various predictors vs. PCA1 and PCA2.
+
+### False Negatives  
+I'm going to get the names of the 10 false negative samples
+```{r}
+dim(stageHealthyDF)[1]
+stage3pred <- testPredictions_toil[c((dim(stageHealthyDF)[1]+1):dim(testPredictions_toil)[1]),]
+stage3predFN <- names(stage3pred[stage3pred==0])
+
+# now that I've got the 10 names of the stage 3 false negatives, 
+# I'd like to compare that to my large Wang set.
+
+# the full set of Wang sample names can be found at:
+# /Users/mjk/Desktop/Tresorit_iOS/projects/RNA-Seq/MachineLearningRNASeq/WangFullTCGAHealthySmpNames.csv	
+# /Users/mjk/Desktop/Tresorit_iOS/projects/RNA-Seq/MachineLearningRNASeq/WangFullTCGATumorSmpNames.csv
+WangTCGAtumorNames_Full <- read.csv("/Users/mjk/Desktop/Tresorit_iOS/projects/RNA-Seq/MachineLearningRNASeq/WangFullTCGATumorSmpNames.csv")
+WangTCGAtumorNames_Full <- gsub("(^TCGA\\.[^\\.]+\\.[^\\.]+\\.[0-9]+).*", "\\1", names(WangTCGAtumorNames_Full))
+
+setdiff(stage3predFN, WangTCGAtumorNames_Full)
+```
+Of the 10 stage3 false negatives, 7 were in the Wang set and 3 were not.
+```{r}
+WangTCGAhealthyNames_Full <- read.csv("/Users/mjk/Desktop/Tresorit_iOS/projects/RNA-Seq/MachineLearningRNASeq/WangFullTCGAHealthySmpNames.csv")
+WangTCGAhealthyNames_Full <- gsub("(^TCGA\\.[^\\.]+\\.[^\\.]+\\.[0-9]+).*", "\\1", names(WangTCGAhealthyNames_Full))
+stage3predFN
+
+```
+
+
+### Try 1-by-1 Sample Normalization Relative to Training Set
+It appears, but is not certain, that normalization is the major reason the dataframes grouped by *tumor stage* performed so poorly.  So I'm going to use the *training* dataset as a reference for filtering certain genes and then for performing the normalization.  The gene-level scaling should only require a vector of training means and a vector of training standard deviations.  
+As this will involve repeating many steps, I'll create a function for it.  
+```{r}
+# need: REFNAME, REFSAMPLE, REFSAMPLEUNSCALED for sample-to-sample scaling factors
+# need: ZEROEXPGENES for filtering out background genes
+
+# need to clean up stageOneDF, etc, because they have lots of Wang train/test samples from above:
+### See if Wang was separated out from TCGA-test sets:
+
+wangTCGAtrainTest <- rownames(wangMatrix)[grepl("^TCGA", rownames(wangMatrix))]  # used as train and test above
+wangTCGAtrainTest <- gsub("(^TCGA\\.[^\\.]+\\.[^\\.]+\\.[0-9]+).*", "\\1", wangTCGAtrainTest)
+stageOneDF <- stageOneDF[!(rownames(stageOneDF) %in% wangTCGAtrainTest),]   #  Good news.
+stageTwoDF <- stageTwoDF[!(rownames(stageTwoDF) %in% wangTCGAtrainTest),]
+stageThreeDF <- stageThreeDF[!(rownames(stageThreeDF) %in% wangTCGAtrainTest),]
+stageFourDF <- stageFourDF[!(rownames(stageFourDF) %in% wangTCGAtrainTest),]
+stageHealthyDF <- stageHealthyDF[!(rownames(stageHealthyDF) %in% wangTCGAtrainTest),]
+
+stageOneOutcome <- rep(1, dim(stageOneDF)[1])
+stageTwoOutcome <- rep(1, dim(stageTwoDF)[1])
+stageThreeOutcome <- rep(1, dim(stageThreeDF)[1])
+stageFourOutcome <- rep(1, dim(stageFourDF)[1])
+stageHealthyOutcome <- rep(0, dim(stageHealthyDF)[1])
+
+# pre-requisites: create mean and sd vectors for all filtered genes
+REF_MEANS <- apply(TOILTRAINFILTER, 2, mean)
+REF_SDS <- apply(TOILTRAINFILTER, 2, sd)
+
+
+filterScaleNormalizePredict <- function(df, ZEROEXPGENES, REFSAMPLE, REFNAME,
+                                        REFSAMPLEUNSCALED, REF_MEANS, REF_SDS,
+                                        coefsFullNames, coefsToilNonZero){
+   # 1b. convert to natural scale:
+   dfNat <- (2^df)-1
+   
+   # 2. subtract out ZEROEXPGENES, as defined in training set
+   dfNatFilt <- dfNat[,-ZEROEXPGENES]
+   
+   # 2b. represent intensities as fraction of all signals in each sample
+   N <- apply(dfNatFilt, 1, sum)
+   dfFiltFrac <- apply(dfNatFilt, 2, function(x) x / N)
+   
+   # 3. Calculate scaling factor, relative to REFSAMPLE, for each sample in healthy3...
+   dfSFs <- calcScalingFactors(dfNatFilt, dfFiltFrac, REFSAMPLE,
+                                  REFNAME, REFSAMPLEUNSCALED)
+   
+   # 3b. Apply scaling factors
+   dfFiltScaled <- apply(dfNatFilt, 2, function(x) x/dfSFs)
+   
+   # 4. Remove Non-Predictor Genes from Filtered Test Data, REF_MEANS, REF_SDS
+   dfFiltScal42 <- dfFiltScaled[,coefsFullNames[2:length(coefsFullNames)]]
+   REF_MEANS_Predictors <- REF_MEANS[coefsFullNames[2:length(coefsFullNames)]]
+   REF_SDS_Predictors <- REF_SDS[coefsFullNames[2:length(coefsFullNames)]]
+   
+   # 5. scale each gene by its stdev and offset by its mean.  Add intercept
+   dfFiltScaledSD <- t(apply(dfFiltScal42, 1, function(x){(x - REF_MEANS_Predictors)/REF_SDS_Predictors}))
+   dfFiltScaledSD <- cbind(rep(1,dim(dfFiltScaledSD)[1]), dfFiltScaledSD)
+   
+   # 6. perform predictions
+   testPredictions <- ifelse(dfFiltScaledSD %*% coefsToilNonZero > 0, 1, 0)
+   return(testPredictions)
+}
+
+# healthy sample only:
+healthyPreds <- filterScaleNormalizePredict(stageHealthyDF, ZEROEXPGENES, REFSAMPLE, REFNAME,
+                            REFSAMPLEUNSCALED, REF_MEANS, REF_SDS, coefsFullNames,
+                            coefsToilNonZero)
+table(stageHealthyOutcome, healthyPreds)
+```
+```{r}
+# stage 4 only
+stage4Preds <- filterScaleNormalizePredict(stageFourDF, ZEROEXPGENES, REFSAMPLE, REFNAME,
+                            REFSAMPLEUNSCALED, REF_MEANS, REF_SDS, coefsFullNames,
+                            coefsToilNonZero)
+table(stageFourOutcome, stage4Preds)
+```
+100% sensitivity for stage 4 tumors!
+```{r}
+# stage 3 only
+stage3Preds <- filterScaleNormalizePredict(stageThreeDF, ZEROEXPGENES, REFSAMPLE, REFNAME,
+                            REFSAMPLEUNSCALED, REF_MEANS, REF_SDS, coefsFullNames,
+                            coefsToilNonZero)
+table(stageThreeOutcome, stage3Preds)
+```
+98.0% sensitivity for stage 3 tumors!
+
+```{r}
+# stage 2 only
+stage2Preds <- filterScaleNormalizePredict(stageTwoDF, ZEROEXPGENES, REFSAMPLE, REFNAME,
+                            REFSAMPLEUNSCALED, REF_MEANS, REF_SDS, coefsFullNames,
+                            coefsToilNonZero)
+table(stageTwoOutcome, stage2Preds)
+```
+98.4% sensitivity for stage 2 tumors!
+```{r}
+# stage 1 only
+stage1Preds <- filterScaleNormalizePredict(stageOneDF, ZEROEXPGENES, REFSAMPLE, REFNAME,
+                            REFSAMPLEUNSCALED, REF_MEANS, REF_SDS, coefsFullNames,
+                            coefsToilNonZero)
+table(stageOneOutcome, stage1Preds)
+```
+100% sensitivity for stage 1 tumors!
+
+Overall, I have 98.6% sensitivity.
+
+
+
+##### Now that I'm normalizing straight from the training references, specificity rose to 98.4%, while retaining 100% sensitivity.
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
