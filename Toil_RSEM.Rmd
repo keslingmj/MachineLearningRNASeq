@@ -473,33 +473,62 @@ ggplot(df02, aes(x=idx, y=cumVar)) +
    theme_bw()
 ```
 # Identifying Other PCs that Separate Healthy / Tumor
-```{r, fig.height=8, fig.width=8}
-plotPCs <- function(toilTrainFiltScaled, compIdx){
-   trainScaled <- scaleData(toilTrainFiltScaled, TRUE, FALSE)
-   PCs <- prcomp(trainScaled)                               # (data already scaled)
-   nComp <- 2
-   dfComponents <- predict(PCs, newdata=trainScaled)[,1:nComp]
-   PC_plot <- data.frame(x=dfComponents[,1], y = dfComponents[,2], col=prognosis)
+```{r, fig.height=10, fig.width=8}
+plotPCs <- function(dfComponents, compIdx){
+   PC_plot <- data.frame(x=dfComponents[,compIdx[1]], y = dfComponents[,compIdx[2]], col=prognosis)
    colors3pal <- c("#FDAE6B", "#E6550D",  "#56B4E9")
    #tsne_plot_3class <- data.frame(x=tSNEout_full$Y[,1], y = tSNEout_full$Y[,2], col=prognosis)
-   obj <- (ggplot(PC_plot) + 
+   obj <<- ggplot(PC_plot) + 
       geom_point(aes(x=x, y=y, color=as.factor(col))) + 
       ggtitle("PCA Plot of Training Data Using All Filtered Predictors of Toil Training Data") +
-      xlab("PC1") + ylab("PC2") +
+      xlab(paste0("PC",compIdx[1])) + ylab(paste0("PC", compIdx[2])) +
       scale_color_manual(name="Category",
                          breaks = c("1", "2", "3"),
                          values = c(colors3pal[1], colors3pal[2], colors3pal[3]),
-                         labels = c("Healthy-GTEX", "Healthy-TCGA", "Cancer-TCGA")))
+                         labels = c("Healthy-GTEX", "Healthy-TCGA", "Cancer-TCGA"));
    return(obj)
 }
+
+plotPCs_1d <- function(dfComponents){
+   PC_plot <- data.frame(x=dfComponents$Var2, y = dfComponents$value, col=prognosis)
+   colors3pal <- c("#FDAE6B", "#E6550D",  "#56B4E9")
+   #tsne_plot_3class <- data.frame(x=tSNEout_full$Y[,1], y = tSNEout_full$Y[,2], col=prognosis)
+   obj <- ggplot(PC_plot) + 
+      geom_jitter(aes(x=x, y=y, color=as.factor(col))) + 
+      ggtitle("Separation of Healthy / Tumors by First Few PC's") +
+      xlab("PC Number") + ylab("PC Projection") +
+      theme_bw() +
+      scale_color_manual(name="Category",
+                         breaks = c("1", "2", "3"),
+                         values = c(colors3pal[1], colors3pal[2], colors3pal[3]),
+                         labels = c("Healthy-GTEX", "Healthy-TCGA", "Cancer-TCGA"));
+   return(obj)
+}
+
+# define first 4 PC's:
+trainScaled <- scaleData(toilTrainFiltScaled, TRUE, FALSE)
+PCs <- prcomp(trainScaled)                               # (data already scaled)
+nComp <- 5
+dfComponents <- predict(PCs, newdata=trainScaled)[,1:nComp]
 ls <- list()
-plotPCs(toilTrainFiltScaled, c(1,3))
+pairs <- combn(5,2)
+for(idx in 1:dim(pairs)[2]){
+   print(idx)
+   pair <- pairs[,idx]
+   ls[[idx]] <- plotPCs(dfComponents, pair)
+}
+grid.arrange(ls[[1]], ls[[2]], ls[[3]], ls[[4]], ls[[5]], ls[[6]],
+             ls[[7]], ls[[8]], ls[[9]], ls[[10]], ncol=2)
 ```
 
+```{r, fig.height=6, fig.width=6}
+# now let's do 1D plots of each PC:
+# I will melt dfComponents and add an extra factor column which is PC_ID
+require(reshape2)
+dfCompMelt <- melt(dfComponents)
 
-
-
-
+plotPCs_1d(dfCompMelt)
+```
 
 ### Logistic Regression with Lasso Regularizer on Toil Data
 I'd like to compare the performance on this breast cancer dataset in the absence of batch normalization (ComBat).
@@ -645,10 +674,10 @@ when performing predictions, we'll need *coefsFullNames* and *coefsToilNonZero*.
 Remember when looking at these Lasso-Regularized Coefficients that each predictor gene was offset by its mean and scaled by its standard deviation.  That way, lower and more highly transcribed genes are on equal footing to influence the model.
 
 ### Plotting Gene Expression Values Across Diagnosis for Predictor Genes
-```{r, fig.height=8, fig.width=8}
+```{r, fig.height=4, fig.width=4}
 jitterPlot3var2 <- function(df, var1, var2, var3, titl, pal){
    obj <- ggplot(df, aes(df[,var1], df[,var2]), colour=as.factor(df[,var3]))+ #as.factor() 
-   geom_jitter(aes(col=as.factor(df[,var3])),size=1.0, height=0.3) +   #as.factor() needed
+   geom_jitter(aes(col=as.factor(df[,var3])),size=2.0, height=0.3) +   #as.factor() needed
       scale_color_manual(name="Category",
                       breaks = c("1", "2", "3"),
                       values = pal,
@@ -672,20 +701,25 @@ c3vect <- c3vect + 3*(grepl("^TCGA", sampleNames) &
 geneNames <- colnames(predictors42scaled)
 
 ls <- list()
-for(i in 1:6){
+predictorsCorrPC2 <- c(6,8,9,15,21,22,40,42)
+for(i in predictorsCorrPC2){
    geneValues <- cbind(c(rep(0, 139), rep(1, 148)), predictors42scaled[i,], c3vect)
-   colnames(geneValues) <- c("diagnosis", "log2FPKM", "class")
+   colnames(geneValues) <- c("diagnosis", "normalized_counts", "class")
    ls[[i]] <- jitterPlot3var2(data.frame(geneValues), "diagnosis", 
-                  "log2FPKM", "class", geneNames[i], colors3pal)
+                  "normalized_counts", "class", geneNames[i], colors3pal)
 }
-grid.arrange(ls[[1]], ls[[2]], ls[[3]], ls[[4]], ls[[5]], ls[[6]], ncol=2)
+grid.arrange(ls[[1]], ls[[2]], ls[[3]], ls[[4]], ls[[5]], ls[[6]],  # printing bug
+             ls[[7]], ls[[8]], ncol=2)
 ```
 ### Plotting PC2 vs Predictors
 As it appears that PC2 separates healthy / tumor samples better than PC1, I'll plot a few important predictors against PC2
-```{r, fig.height=8, fig.width=8}
+```{r, fig.height=56, fig.width=8}
 colors3pal <- c("#FDAE6B", "#E6550D",  "#56B4E9")
+predictors42scaled <- toilTrainFiltScaledSD[,colnames(toilTrainFiltScaledSD) %in% coefsFullNames]
+sampleNames <- rownames(predictors42scaled)
+geneNames <- colnames(predictors42scaled)
 ls <- list()
-for(i in 1:6){
+for(i in 1:42){
    PC_vs_Predictors <- data.frame(x = dfComponents[,2], y = predictors42scaled[,i],col=prognosis)
    correlation <- cor(PC_vs_Predictors$x, PC_vs_Predictors$y)
    ls[[i]] <- (ggplot(PC_vs_Predictors) + 
@@ -697,9 +731,79 @@ for(i in 1:6){
                          values = c(colors3pal[1], colors3pal[2], colors3pal[3]),
                          labels = c("Healthy-GTEX", "Healthy-TCGA", "Cancer-TCGA")));
 }
-grid.arrange(ls[[1]], ls[[2]], ls[[3]], ls[[4]], ls[[5]], ls[[6]], ncol=2)
+grid.arrange(ls[[1]], ls[[2]], ls[[3]], ls[[4]], ls[[5]], ls[[6]],
+             ls[[7]], ls[[8]], ls[[9]], ls[[10]], ls[[11]], ls[[12]],
+             ls[[13]], ls[[14]], ls[[15]], ls[[16]], ls[[17]], ls[[18]],
+             ls[[19]], ls[[20]], ls[[21]], ls[[22]], ls[[23]], ls[[24]],
+             ls[[25]], ls[[26]], ls[[27]], ls[[28]], ls[[29]], ls[[30]],
+             ls[[31]], ls[[32]], ls[[33]], ls[[34]], ls[[35]], ls[[36]],
+             ls[[37]], ls[[38]], ls[[39]], ls[[40]], ls[[41]], ls[[42]],
+             ncol=2)
 ```
+### Printing Samples Across Predictors in Line Graph
+This graph will demonstrate that although the individual predictors have essentially identical behavior between the healthy samples and tumors, I believe that when samples are plotted across the 42 predictors that we'll see a separation between healthy samples and tumors.
+```{r, fig.height=6, fig.width=10, dpi=300}
+require(reshape2)
+# need to shorten names and print those gene names vertically
+colnames(predictors42scaled) <- coefsShortNames[2:length(coefsShortNames)]  # simplify predictor names
+colors3pal <- c("#FDAE6B", "#E6550D",  "#56B4E9")
+predict42scaledMelt <- melt(predictors42scaled)
+predict42scaledMelt <- cbind(predict42scaledMelt , colr=as.factor(rep(prognosis, 42)))
+ggplot(predict42scaledMelt, aes(x=Var2, y=value)) + #, colour=colr)) +
+   geom_jitter(aes(colour=colr)) +
+   ylim(-2,5) + theme(axis.text.x=element_text(angle=90)) +
+   scale_color_manual(name="Category",
+                         breaks = c("1", "2", "3"),
+                         values = c(colors3pal[1], colors3pal[2], colors3pal[3]),
+                         labels = c("Healthy-GTEX", "Healthy-TCGA", "Cancer-TCGA"))
 
+```
+### Using 2 genes to separate out healthy and tumor samples
+I'm going to use MIR497HG and PAFAH1B3 to create a 2D plot of the samples colored by their healthy / tumor status.  I'm choosing these two because they have large coefficients in the model and because they are inversely correlated with one another.
+```{r, fig.height=4, fig.width=4}
+df03 <- predictors42scaled[,c("PAFAH1B3", "MIR497HG")]
+df03 <- data.frame(cbind(df03, col=as.factor(prognosis)))
+ggplot(df03) +
+   geom_point(aes(x=PAFAH1B3,y=MIR497HG,colour=as.factor(col))) +
+    #ylim(-2,5) + #theme_bw() + # (axis.text.x=element_text(angle=90)) +
+   scale_color_manual(name="Category",
+                         breaks = c("1", "2", "3"),
+                         values = c(colors3pal[1], colors3pal[2], colors3pal[3]),
+                         labels = c("Healthy-GTEX", "Healthy-TCGA", "Cancer-TCGA"))
+```
+### Correlation between Predictors
+```{r}
+predictorDist <- dist(t(predictors42scaled))
+sampleDist <- dist(predictors42scaled)
+image(as.matrix(sampleDist))
+
+```
+### Heatmap of Samples and Predictor Genes
+```{r, fig.height=12, fig.width=10}
+require(heatmap3)
+library(RColorBrewer)
+require(gplots)
+#hmcol <- colorRampPalette(brewer.pal(9, "GnBu"))(100)    # set coloring heat map
+samples <- factor(prognosis)
+#cols <- palette(brewer.pal(1, "Set1"))[samples]         # set color of sample class
+sampleCols <- palette(colors3pal)[samples]         # set color of sample class
+# narrow range for color dynamic range
+# c("#40004B", "#762A83", "#9970AB", "#C2A5CF", "#E7D4E8", 
+#   "#F7F7F7", 
+#   "#D9F0D3","#A6DBA0", "#5AAE61", "#1B7837", "#00441B")
+# hmcol <- colorRampPalette(c("#40004B", "#40004B", "#762A83", "#9970AB", "#C2A5CF",
+#   "#F7F7F7",
+#   "#A6DBA0", "#5AAE61", "#1B7837", "#00441B", "#00441B"))
+hmcol <- colorRampPalette(c("#40004B", "#40004B", "#40004B", "#762A83", "#9970AB", 
+  "#F7F7F7",
+  "#5AAE61", "#1B7837", "#00441B", "#00441B", "#00441B"))
+# colorVals <- c(-15,-3,-2.5,-2,-1.5,-1,-0.5,0,0.5,1,1.5,2,2.5,3,15)
+# hmcol <- colorRampPalette(c("lightblue", "blue"))[colorVals]
+#hmcol <- colorRampPalette(brewer.pal(11, "PRGn"))
+heatmap.2(as.matrix(predictors42scaled), col=hmcol, trace="none", cexRow = 0.15, cexCol = 0.5,  RowSideColors = sampleCols, main = "Heatmap of Gene Predictors vs Samples")
+# ColSideColors = cols,
+# heatmap(as.matrix(predictors42scaled))  # figure margins too large
+```
 ### Filter and Scale Test Data.  (A) Relying on Training Data for Zero-Filtering and Scaling of Test Data
 ```{r}
 ### 1. Filter out near-zero genes as defined with training data:
@@ -783,7 +887,7 @@ for(testSampleName in samples){  # some of the passed variables were created in 
    ScalFact <- c(ScalFact, scalingFactor)
    i = i+1
 }
-ScalFact <- unlist(ScalFact)              # huge adjustments!!!!!!!!!!!!!!!!!!!!!!!!!
+ScalFact <- unlist(ScalFact)             
 
 ### 4. Scale toilTrainFilter matrix using scaling factors
 # dim(toilTestFiltNat)
