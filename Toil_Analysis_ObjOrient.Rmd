@@ -38,12 +38,13 @@ require(caTools);
 # install_github("ririzarr/rafalib")
 require(rafalib);
 require(glmnet);
+require(biomaRt);
 ```
 
 #### Hidden Functions
 There are 3 large functions that don't appear in the .md and .html versions of this document to improve readability: one pre-processes the Toil_RSEM data, one performs TMM sample-to-sample scaling, just like the edgeR method, and the last centers and scales each gene relative to its mean and standard deviation.
 ```{r, include=FALSE}
-weightedTrimmedMean <- function(x){
+weightedTrimmedMean <- function(x, trainX=NULL, flag=0){
    # working with data on natural scale--already filtered and scaled.
    # The values are represented as fraction of total counts.  So
    # df should be 'TOILTRAINFILTER' which are not as fracction of total counts, as
@@ -51,11 +52,18 @@ weightedTrimmedMean <- function(x){
    # computing weights requires data that are not fraction of total counts,
    # so we use x[[3]]
    
-   
-   refName <- x[[8]]
-   refIdx <- which(rownames(x[[4]])==refName)
-   refSample <- x[[4]][refIdx,]
-   refSmpUnscaled <- x[[3]][refIdx,]
+   if(flag==0){                                     # get ref data from x object
+      refName <- x[[8]]
+      refIdx <- which(rownames(x[[4]])==refName)
+      refSample <- x[[4]][refIdx,]
+      refSmpUnscaled <- x[[3]][refIdx,]
+   }
+   else if(flag==1){                     # get ref data from training set object
+      refName <- trainX[[8]]
+      refIdx <- which(rownames(trainX[[4]])==refName)
+      refSample <- trainX[[4]][refIdx,]
+      refSmpUnscaled <- trainX[[3]][refIdx,]
+   }
 
    scalingFactors <- c()
    
@@ -63,7 +71,7 @@ weightedTrimmedMean <- function(x){
       # run meat of program
       testName <- rownames(x[[4]])[testIdx]
       testSample <- x[[4]][testIdx,]
-      testSmpUnscaled <- x[[3]][testIdx,]
+      testSmpUnscaled <- x[[3]][testIdx,]   
       
       refZeros <- which(refSample==0)
       smpZeros <- which(testSample==0)
@@ -207,18 +215,18 @@ preProcess <- function(toilSubset, TOILGENEANNOT){
 
 createDAT <- function(M){                # M is a data.matrix
    # it's assumed that samples are rows and genes are columns already
-   z <- list(M_orig <- M,                     # assumed log2 scale
-             M_nat <- matrix(),          # M_orig on natural scale
-             M_filt <- matrix(),         # after gene filtering
-             M_scaled <- matrix(),       # as fraction of all counts
-             M_norm <- matrix(),         # after gene normalization
-             ZEROGENES <- list(),
-             outcome <- list(),
-             RefSampleName <- character(),
-             RefSample <- matrix(),
-             RefSampleUnscaled <- matrix(),
-             M_filtScaled <- matrix(),   # after TMM scaling
-             seed <- numeric())
+   z <- list(M_orig = M,                     # assumed log2 scale
+             M_nat = matrix(),          # M_orig on natural scale
+             M_filt = matrix(),         # after gene filtering
+             M_scaled = matrix(),       # as fraction of all counts
+             M_norm = matrix(),         # after gene normalization
+             ZEROGENES = list(),
+             outcome = list(),
+             RefSampleName = character(),
+             RefSample = matrix(),
+             RefSampleUnscaled = matrix(),
+             M_filtScaled = matrix(),   # after TMM scaling
+             seed = numeric())
    #names(z[[2]]) <- "Nat"
    class(z) <- "DAT"
    return(z)
@@ -369,6 +377,19 @@ plot(cv.Toil.lasso)
 ```
 We can see that 42 predictors gives us a model whose deviance is within 1-standard deviation from the minimum.  
 
+### Select the Model by Capturing the Coefficients
+```{r}
+
+coefsToil <- coef(fitToil.lasso, s=cv.Toil.lasso$lambda.1se)
+allCoefsNames <- rownames(coefsToil)
+idx <- which(coefsToil!= 0)
+coefsFullNames <- allCoefsNames[idx]                     # USED EXTENSIVELY BELOW
+
+coefsToilNonZero <- coefsToil[which(coefsToil!= 0)]
+```
+
+################# SOME CODE HERE MIGHT BE MISSING #############################
+
 ## Working with Test Data  
 
 ### Filter and Scale Test Data.  
@@ -398,12 +419,41 @@ test[[3]] <- test[[2]][, -train[[6]]]     # subtract off genes and return
 #### 2. Sample-to-Sample Scaling of Test Set
 We're going to use the Reference Sample data from the training set here  
 ```{r}
-test[[4]] <- train[[4]]; test[[8]] <- train[[8]]      #tf data from training set
-test[[11]] <- weightedTrimmedMean(test)               # scaled data
+# We're only running pickRefSample to get test set represented as fraction 
+# of total counts
+tmp <- pickRefSample(test)
+# BUG IS ON NEXT LINE FOR TEST[[4]]
+test[[4]] <- tmp[[2]]; test[[8]] <- train[[8]]      #RefSeqName from training set
+
+# THIS NEXT STEP HAS A BUG, AS THE REF DATA IS BEING EXTRACTED RELATIVE TO THE 
+# TEST SET AND ITS ONLY PART OF THE TRAINING SET.  I'LL NEED A MODIFICATION.
+# I'LL NEED A FLAG AND THE TRAINING OBJECT
+test[[11]] <- weightedTrimmedMean(test, train, 1)               # scaled data
 ```
 ### 3. Gene-level Normalization on Test Set
 
 ```{r}
 test[[5]] <- normalizeGenes(test[[11]], TRUE, FALSE)
 ```
+########### CODE BELOW MUST BE MODIFIED #######################################
+### 4. Remove Non-Predictor Genes from Filtered Test Data
+We're just keeping the 42 predictors from toilTestFiltScaled
+```{r}
+colIDs <- which(colnames(test[[5]]) %in% coefsFullNames[2:length(coefsFullNames)])
+toilTestFiltScal42 <- test[[5]][,colIDs]  # SEPARATE FROM OBJECT
+```
+### 5. Each Relevant Predictor Gene offset by Its Mean and Scaled by Its Standard Deviation  -- done 2nd time here b/c only 42 predictors remain
+```{r}
+# colnames(toilTestFiltScal42)
+toilTestFiltScaledSD <- normalizeGenes(toilTestFiltScal42, TRUE, FALSE)       
+# this would not be possible for individual samples!!!!!!
+toilTestFiltScaledSD <- cbind(rep(1,dim(toilTestFiltScaledSD)[1]), toilTestFiltScaledSD)
+```
+### Create Confusion Matrix for Test Data
+
+```{r}
+testPredictions_toil <- ifelse(toilTestFiltScaledSD %*% coefsToilNonZero > 0, 1, 0)
+table(outcomeTest, testPredictions_toil)
+```
+I'm at 100% sensitivity and 100% specificity.
 
