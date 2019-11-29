@@ -19,6 +19,7 @@ The *markdown* and *html* versions of this document have some of the code masked
 For this code to run, one must set the path, on one's machine to the *RSEM_COUNTS_FILE*, which contains the RNASeq data, and the *TOILGENEANNOT* file, which maps the Ensembl identifiers to the gene names.
 ```{r setup}
 knitr::opts_chunk$set(echo = TRUE)
+rmarkdown::render("./debug.Rmd")
 #######################
 # SET GLOBAL PARAMETERS
 #######################
