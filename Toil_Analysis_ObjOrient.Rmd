@@ -532,19 +532,62 @@ ls <- list()
 pairs <- combn(5,2)
 for(idx in 1:dim(pairs)[2]){
    pair <- pairs[,idx]
-   ls[[idx]] <- plotPCs(dfComponents, pair)
+   ls[[idx]] <- plotPCs(dfComponents, pair)                  # Add a MAIN TITLE and remove other titles
 }
 grid.arrange(ls[[1]], ls[[2]], ls[[3]], ls[[4]], ls[[5]], ls[[6]],
              ls[[7]], ls[[8]], ls[[9]], ls[[10]], ncol=2)
 ```
 It appears that PC2 and PC2 together perhaps give the best separation.
 
-### Model Predictors
-I'm going to pull the definition and symbols for the 42 predictors in the model to see what genes they are.
+### What Genes are the Model Predictors?
+I'm going to pull the definition and symbols for the 42 predictors in the model from *biomaRt* to see what genes they are.
 ```{r}
-geneNames <- gsub("\\.ENSG.*","",coefsFullNames)[2:length(coefsFullNames)]
-```
+# get gene names and Ensembl gene IDs for predictors
+ensembl_geneID <- gsub(".*.(ENSG.*)\\..*$","\\1",coefsFullNames)[2:length(coefsFullNames)]
+geneNames <- gsub("\\.ENSG.*","",coefsFullNames)[2:length(coefsFullNames)]           # not great name--should have "predictors"
 
+# we'll grab biomaRt data for these genes.  The following block of code is only
+# run once, and the results are stored in a file.
+if(FALSE){
+listMarts()
+ensembl=useMart("ensembl")
+ensembl = useDataset("hsapiens_gene_ensembl",mart=ensembl)
+
+geneID_Name_Description <- getBM(attributes=c("ensembl_gene_id", "hgnc_id", 
+                                              "hgnc_symbol", "description"),
+   values=geneNames,
+   mart=ensembl)
+write.csv(geneID_Name_Description, file="geneAttr.csv")
+}
+
+Ensmbl_HGNC_SYM_DESC <- read.csv("geneAttr.csv", header=TRUE, stringsAsFactors = F)
+predictorsGeneAnnot <- Ensmbl_HGNC_SYM_DESC %>% filter(ensembl_gene_id %in% ensembl_geneID)
+print(predictorsGeneAnnot[,c(2,4,5)])
+grep("antisense", predictorsGeneAnnot$description, ignore.case=T)
+```
+3 are anti-sense RNAs, 1 pseudogene: (CNTNAP3 pseudogene 2), 1 non-protein coding gene,
+1 micro RNA, and the others being protein-coding genes.
+
+### Expression of the 42 Predictors Across Healthy Samples and Tumors
+```{r, fig.height=6, fig.width=10, dpi=300}
+require(reshape2)
+trainNorm42predictors <- train$M_norm[,colIDs]
+#print(cbind(geneNames, colnames(trainNorm42predictors)))
+# need to shorten names and print those gene names vertically
+colnames(trainNorm42predictors) <- geneNames  # simplify predictor names   
+colors3pal <- c("#FDAE6B", "#E6550D",  "#56B4E9")
+predict42scaledMelt <- melt(trainNorm42predictors)
+predict42scaledMelt <- cbind(predict42scaledMelt , colr=as.factor(rep(prognosis, 42)))
+ggplot(predict42scaledMelt, aes(x=Var2, y=value)) + #, colour=colr)) +
+   geom_jitter(aes(colour=colr)) +
+   ylim(-2,5) + theme(axis.text.x=element_text(angle=90)) +
+   xlab("Gene Predictors") + ylab("Number of STDEV of Expression vs Mean") +
+   scale_color_manual(name="Category",
+                         breaks = c("1", "2", "3"),
+                         values = c(colors3pal[1], colors3pal[2], colors3pal[3]),
+                         labels = c("Healthy-GTEX", "Healthy-TCGA", "Cancer-TCGA"))
+
+```
 
 
 
