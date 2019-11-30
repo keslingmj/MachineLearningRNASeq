@@ -8,7 +8,7 @@ Making Cancer Predictions on Breast RNA-Seq Samples
 
 This particular document takes the Toil-normalized TCGA and GTEx breast cancer samples and runs the logistic regression algorithm with lasso regularizer on them. Importantly, the only sample-to-sample normalization performed in quantile-quantile normalization relative to a single reference sample. No batch normalization is performed at this point, as it's the simplest scenario for test samples processed in the clinic, as they will appear one at a time, typically.
 
-The data were downloaded from the UCSC server at: <https://xenabrowser.net/datapages/?cohort=TCGA%20TARGET%20GTEx&removeHub=https%3A%2F%2Fxena.treehouse.gi.ucsc.edu%3A443> There are 2 relevant *gene expression RNAseq* datasets there. *RSEM expected\_count (n=60,500)* which is used in this document, and *RSEM expected\_count (DESeq2 standardized)* which was used in the *Toil\_Norm.Rmd* file.
+The data were downloaded from the UCSC server at: <https://xenabrowser.net/datapages/?cohort=TCGA%20TARGET%20GTEx&removeHub=https%3A%2F%2Fxena.treehouse.gi.ucsc.edu%3A443> There are 2 relevant *gene expression RNAseq* datasets there. *RSEM expected\_count (n=19,109)* which is used in this document, and *RSEM expected\_count (DESeq2 standardized) (n=19,039)* which was used in the *Toil\_Norm.Rmd* file.
 
 The *markdown* and *html* versions of this document have some of the code masked for better readability. To view the full code, see the [.Rmd version](Toil_Analysis_ObjOrient.Rmd).
 
@@ -101,7 +101,7 @@ addZeroGenes <- function(x, ZERO){    # used when training-ZERO applied to
 MAIN
 ----
 
-The RSEM-Counts file originated as the full set of GTEX and TCGA breast samples, both healthy and tumors, which numbered over 1200. I wanted an equal number of tumor and healthy samples in my training and test set, as it gave me the best chance at seeing how well my predictor performed. Further, some samples had been found by the Sloan-Kettering group to be of low quality, and these were filtered out. These steps were performed by another script. Our starting dataframe here, is therefore called *toilSubset*, and has 387 samples.
+The RSEM-Counts file originated as the full set of GTEX and TCGA breast samples, both healthy and tumors, which numbered over 1200. I wanted an equal number of tumor and healthy samples in my training and test set, as it gave me the best chance at seeing how well my predictor performed. Further, some samples had been found by the Sloan-Kettering group to be of low quality, and these were filtered out. These steps were performed by another script (Toil\_RSEM.Rmd). Our starting dataframe here, is therefore called *toilSubset*, and has 387 samples.
 
 ``` r
 # just read already-subsetted dataframe
@@ -354,6 +354,7 @@ plotPCs <- function(dfComponents, compIdx){
       geom_point(aes(x=x, y=y, color=as.factor(col)), alpha=0.6) + 
       ggtitle("PCA Plot of Training Data Using All Filtered Predictors of Toil Training Data") +
       xlab(paste0("PC",compIdx[1])) + ylab(paste0("PC", compIdx[2])) +
+      theme_bw() + 
       scale_color_manual(name="Category",
                          breaks = c("1", "2", "3"),
                          values = c(colors3pal[1], colors3pal[2], colors3pal[3]),
@@ -373,7 +374,7 @@ colors3pal <- c("#FDAE6B", "#E6550D",  "#56B4E9")
 ggplot(PC_plot) + 
    geom_point(aes(x=x, y=y, color=as.factor(col)), alpha=0.6) + 
    ggtitle("PCA Plot of Training Data Using All Filtered Predictors of Toil Training Data") +
-   xlab("PC1") + ylab("PC2") +
+   xlab("PC1") + ylab("PC2") + theme_bw() +
    scale_color_manual(name="Category",
                       breaks = c("1", "2", "3"),
                       values = c(colors3pal[1], colors3pal[2], colors3pal[3]),
@@ -471,26 +472,57 @@ joinedAnnot <- inner_join(predGeneAnnot, ensembl_coefs, by=c("ensembl_gene_id" =
 
 ``` r
 # arrange by order to desc abs coeff and print select columns:
-joinedAnnot$description <- gsub(" \\[.*$","",joinedAnnot$description) %>% substr(1,40)
-as_tibble(joinedAnnot %>% arrange(desc(abs.modelCoefs.)) %>% dplyr::select("ensembl_gene_id", 
+joinedAnnot$description <- gsub(" \\[.*$","",joinedAnnot$description) # %>% substr(1,40)
+print(as_tibble(joinedAnnot %>% arrange(desc(abs.modelCoefs.)) %>% dplyr::select("ensembl_gene_id", 
                                                           "hgnc_symbol", "modelCoefs",
-                                                          "description"))
+                                                          "description")), n=42)
 ```
 
     ## # A tibble: 42 x 4
     ##    ensembl_gene_id hgnc_symbol modelCoefs description                      
     ##    <chr>           <chr>            <dbl> <chr>                            
-    ##  1 ENSG00000267532 MIR497HG        -0.490 mir-497-195 cluster host gene    
-    ##  2 ENSG00000182492 BGN              0.489 biglycan                         
-    ##  3 ENSG00000143742 SRP9             0.445 signal recognition particle 9    
-    ##  4 ENSG00000137727 ARHGAP20        -0.421 Rho GTPase activating protein 20 
-    ##  5 ENSG00000079462 PAFAH1B3         0.404 platelet activating factor acety…
-    ##  6 ENSG00000266964 FXYD1           -0.401 FXYD domain containing ion trans…
-    ##  7 ENSG00000165795 NDRG2           -0.219 NDRG family member 2             
-    ##  8 ENSG00000119771 KLHL29          -0.213 kelch like family member 29      
-    ##  9 ENSG00000101955 SRPX            -0.212 sushi repeat containing protein …
-    ## 10 ENSG00000106638 TBL2             0.171 transducin beta like 2           
-    ## # … with 32 more rows
+    ##  1 ENSG00000267532 MIR497HG      -0.490   mir-497-195 cluster host gene    
+    ##  2 ENSG00000182492 BGN            0.489   biglycan                         
+    ##  3 ENSG00000143742 SRP9           0.445   signal recognition particle 9    
+    ##  4 ENSG00000137727 ARHGAP20      -0.421   Rho GTPase activating protein 20 
+    ##  5 ENSG00000079462 PAFAH1B3       0.404   platelet activating factor acety…
+    ##  6 ENSG00000266964 FXYD1         -0.401   FXYD domain containing ion trans…
+    ##  7 ENSG00000165795 NDRG2         -0.219   NDRG family member 2             
+    ##  8 ENSG00000119771 KLHL29        -0.213   kelch like family member 29      
+    ##  9 ENSG00000101955 SRPX          -0.212   sushi repeat containing protein …
+    ## 10 ENSG00000106638 TBL2           0.171   transducin beta like 2           
+    ## 11 ENSG00000167705 RILP          -0.161   Rab interacting lysosomal protein
+    ## 12 ENSG00000163431 LMOD1         -0.156   leiomodin 1                      
+    ## 13 ENSG00000267365 KCNJ2-AS1     -0.154   KCNJ2 antisense RNA 1            
+    ## 14 ENSG00000230587 LINC02580     -0.147   long intergenic non-protein codi…
+    ## 15 ENSG00000272582 ""             0.140   novel transcript, antisense to C…
+    ## 16 ENSG00000241657 TRBV11-2       0.124   T cell receptor beta variable 11…
+    ## 17 ENSG00000103495 MAZ            0.117   MYC associated zinc finger prote…
+    ## 18 ENSG00000276386 CNTNAP3P2     -0.116   CNTNAP3 pseudogene 2             
+    ## 19 ENSG00000142910 TINAGL1       -0.109   tubulointerstitial nephritis ant…
+    ## 20 ENSG00000033100 CHPF2          0.106   chondroitin polymerizing factor 2
+    ## 21 ENSG00000189134 NKAPL         -0.106   NFKB activating protein like     
+    ## 22 ENSG00000106683 LIMK1          0.0913  LIM domain kinase 1              
+    ## 23 ENSG00000104888 SLC17A7       -0.0871  solute carrier family 17 member 7
+    ## 24 ENSG00000164694 FNDC1          0.0808  fibronectin type III domain cont…
+    ## 25 ENSG00000164885 CDK5           0.0774  cyclin dependent kinase 5        
+    ## 26 ENSG00000167394 ZNF668         0.0760  zinc finger protein 668          
+    ## 27 ENSG00000136160 EDNRB         -0.0751  endothelin receptor type B       
+    ## 28 ENSG00000168497 CAVIN2        -0.0622  caveolae associated protein 2    
+    ## 29 ENSG00000136014 USP44         -0.0614  ubiquitin specific peptidase 44  
+    ## 30 ENSG00000156284 CLDN8         -0.0493  claudin 8                        
+    ## 31 ENSG00000136295 TTYH3          0.0459  tweety family member 3           
+    ## 32 ENSG00000163041 H3F3A          0.0451  H3 histone family member 3A      
+    ## 33 ENSG00000139112 GABARAPL1     -0.0440  GABA type A receptor associated …
+    ## 34 ENSG00000154265 ABCA5         -0.0428  ATP binding cassette subfamily A…
+    ## 35 ENSG00000160179 ABCG1          0.0410  ATP binding cassette subfamily G…
+    ## 36 ENSG00000004799 PDK4          -0.0392  pyruvate dehydrogenase kinase 4  
+    ## 37 ENSG00000163884 KLF15         -0.0298  Kruppel like factor 15           
+    ## 38 ENSG00000196358 NTNG2          0.0228  netrin G2                        
+    ## 39 ENSG00000117410 ATP6V0B        0.0173  ATPase H+ transporting V0 subuni…
+    ## 40 ENSG00000269243 ""             0.0145  novel transcript, antisense RAB8A
+    ## 41 ENSG00000154736 ADAMTS5       -0.0113  ADAM metallopeptidase with throm…
+    ## 42 ENSG00000176973 FAM89B         0.00695 family with sequence similarity …
 
 Of the 42 predictors, 3 are anti-sense RNAs, 1 pseudogene: (CNTNAP3 pseudogene 2), 1 non-protein coding gene, 1 micro RNA, and the others being protein-coding genes.
 
@@ -507,6 +539,7 @@ predict42scaledMelt <- melt(trainNorm42predictors)
 predict42scaledMelt <- cbind(predict42scaledMelt , colr=as.factor(rep(prognosis, 42)))
 ggplot(predict42scaledMelt, aes(x=Var2, y=value)) + #, colour=colr)) +
    geom_jitter(aes(colour=colr), size=0.5, alpha=0.75) +
+   theme_bw() +
    ylim(-2,5) + theme(axis.text.x=element_text(angle=90)) +
    xlab("Gene Predictors") + ylab("Number of STDEV of Expression vs Mean") +
    scale_color_manual(name="Category",

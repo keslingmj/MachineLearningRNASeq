@@ -25,6 +25,7 @@ knitr::opts_chunk$set(echo = TRUE)
 #######################
 RSEM_COUNTS_FILE <- "/Users/mjk/Desktop/Tresorit_iOS/projects/RNA-Seq/MachineLearningRNASeq/toilSubsetRSEM382.txt"
 TOILGENEANNOT <- "~/RNA-Seq_2019/TOIL_Data/gencode.v23.annotation.gene.probemap"
+BIOMART_GENE_ATTR_FILE <- "/Users/mjk/Desktop/Tresorit_iOS/projects/RNA-Seq/MachineLearningRNASeq/geneAttr.csv"
 SEED <- 233992812
 SEED2 <- 1011
 ```
@@ -337,7 +338,7 @@ train$outcome <- outcomeTrain
 ```
 ### 1. Removing genes whose expression is very close to zero.  
 We know that there are about 9103 genes that are never expressed (data not shown), but there are over 25000 genes whose 75th quantile-level expression is under 2^(0.2) - 1 = 0.14 counts. We really don't want to deal with those genes in selecting a reference sample, etc.
-```{r, fig.height=6, fig.width=6, dpi=300}
+```{r, fig.height=8, fig.width=8, dpi=300}
 hist(apply(toilTrain, 2, function(x) quantile(x)[4]), breaks=100, main="Histogram of each gene's 75th quantile of expression.", xlab="log2(Est Counts)")
 ```
 Another attempt at filtering genes whose log2(Est Counts) was less than 5 gave very unstable results at the sample-to-sample scaling factor step that corrects for unequal depth-of-sequencing between samples (not shown here).  The exact reason for this hasn't been pursued at this point.  One possibility is that samples whose depth-of-sequencing is low may have most of their genes absent for the sample-to-sample adjustment step.
@@ -391,23 +392,30 @@ coefsToil <- coef(cv.Toil.lasso, s=cv.Toil.lasso$lambda.1se)
 
 ##########
 # Store model in a structure:
-storeMODEL <- function(coefsToil){
+storeMODEL <- function(coefsToil, train=train){
    idx <- which(coefsToil[,1] != 0)
    predictorFullNames <- rownames(coefsToil)[idx]
+   colIDs <- which(colnames(train$M_norm) %in% 
+                   predictorFullNames) 
+   tmpDF <- train$M_norm[,colIDs]
+   predGeneNames <- gsub("\\.ENSG.*","", predictorFullNames)
+   colnames(tmpDF) <- predGeneNames[2:length(predGeneNames)]
 
    z <- list(
       fullModel = coefsToil,
       predFullNames = predictorFullNames,
       predCoefs = coefsToil[idx],
-      predGeneNames = gsub("\\.ENSG.*","", predictorFullNames), 
-      predEntrezID = gsub(".*.(ENSG.*)\\..*$","\\1", predictorFullNames) 
+      predGeneNames = predGeneNames, 
+      predEntrezID = gsub(".*.(ENSG.*)\\..*$","\\1", predictorFullNames),
+      modelDF = tmpDF                                 # lacks (Intercept)
    )
    
    class(z) <- "MODEL"
    return(z)
 }
 
-LogRegModel <- storeMODEL(coefsToil)
+LogRegModel <- storeMODEL(coefsToil, train)
+
 ```
 ## Working with Test Data  
 
@@ -482,6 +490,7 @@ plotPCs <- function(dfComponents, compIdx){
       geom_point(aes(x=x, y=y, color=as.factor(col)), alpha=0.6) + 
       ggtitle("PCA Plot of Training Data Using All Filtered Predictors of Toil Training Data") +
       xlab(paste0("PC",compIdx[1])) + ylab(paste0("PC", compIdx[2])) +
+      theme_bw() + 
       scale_color_manual(name="Category",
                          breaks = c("1", "2", "3"),
                          values = c(colors3pal[1], colors3pal[2], colors3pal[3]),
@@ -501,7 +510,7 @@ colors3pal <- c("#FDAE6B", "#E6550D",  "#56B4E9")
 ggplot(PC_plot) + 
    geom_point(aes(x=x, y=y, color=as.factor(col)), alpha=0.6) + 
    ggtitle("PCA Plot of Training Data Using All Filtered Predictors of Toil Training Data") +
-   xlab("PC1") + ylab("PC2") +
+   xlab("PC1") + ylab("PC2") + theme_bw() +
    scale_color_manual(name="Category",
                       breaks = c("1", "2", "3"),
                       values = c(colors3pal[1], colors3pal[2], colors3pal[3]),
@@ -517,7 +526,7 @@ In light of the PC plot, it perhaps should not be surprising that an off-the-she
 
 ### Top 5 Principal Components
 I wanted to see if any other of the top PCs were good at separating healthy samples from tumors.  
-```{r, fig.height=7, fig.width=7, dpi=300}
+```{r, fig.height=10, fig.width=10, dpi=300}
 plotPCs_1d <- function(dfComponents){
    PC_plot <- data.frame(x=dfComponents$Var2, y = dfComponents$value, col=prognosis)
    colors3pal <- c("#FDAE6B", "#E6550D",  "#56B4E9")
@@ -575,26 +584,26 @@ geneID_Name_Description <- getBM(attributes=c("ensembl_gene_id", "hgnc_id",
                                               "hgnc_symbol", "description"),
    values=geneNames,
    mart=ensembl)
-write.csv(geneID_Name_Description, file="geneAttr.csv")
+write.csv(geneID_Name_Description, file=BIOMART_GENE_ATTR_FILE)
 }
 #############
 
-Ensmbl_HGNC_SYM_DESC <- read.csv("geneAttr.csv", header=TRUE, stringsAsFactors = F)
+Ensmbl_HGNC_SYM_DESC <- read.csv(BIOMART_GENE_ATTR_FILE, header=TRUE, stringsAsFactors = F)
 predGeneAnnot <- Ensmbl_HGNC_SYM_DESC %>% dplyr::filter(ensembl_gene_id %in% ensembl_geneID) 
 # join with ensembl-coeff df-abs coeff
 joinedAnnot <- inner_join(predGeneAnnot, ensembl_coefs, by=c("ensembl_gene_id" = "ensembl_geneID"))
 # arrange by order to desc abs coeff and print select columns:
-joinedAnnot$description <- gsub(" \\[.*$","",joinedAnnot$description) %>% substr(1,40)
-as_tibble(joinedAnnot %>% arrange(desc(abs.modelCoefs.)) %>% dplyr::select("ensembl_gene_id", 
+joinedAnnot$description <- gsub(" \\[.*$","",joinedAnnot$description) # %>% substr(1,40)
+print(as_tibble(joinedAnnot %>% arrange(desc(abs.modelCoefs.)) %>% dplyr::select("ensembl_gene_id", 
                                                           "hgnc_symbol", "modelCoefs",
-                                                          "description"))
+                                                          "description")), n=42)
 
 ```
 Of the 42 predictors, 3 are anti-sense RNAs, 1 pseudogene: (CNTNAP3 pseudogene 2), 1 non-protein coding gene,
 1 micro RNA, and the others being protein-coding genes.
 
 ### Expression of the 42 Predictors Across Healthy Samples and Tumors
-```{r, fig.height=6, fig.width=10, dpi=300}
+```{r, fig.height=8, fig.width=12, dpi=300}
 require(reshape2)
 trainNorm42predictors <- train$M_norm[,colIDs]
 #print(cbind(geneNames, colnames(trainNorm42predictors)))
@@ -605,16 +614,27 @@ predict42scaledMelt <- melt(trainNorm42predictors)
 predict42scaledMelt <- cbind(predict42scaledMelt , colr=as.factor(rep(prognosis, 42)))
 ggplot(predict42scaledMelt, aes(x=Var2, y=value)) + #, colour=colr)) +
    geom_jitter(aes(colour=colr), size=0.5, alpha=0.75) +
+   theme_bw() +
    ylim(-2,5) + theme(axis.text.x=element_text(angle=90)) +
    xlab("Gene Predictors") + ylab("Number of STDEV of Expression vs Mean") +
    scale_color_manual(name="Category",
                          breaks = c("1", "2", "3"),
                          values = c(colors3pal[1], colors3pal[2], colors3pal[3]),
                          labels = c("Healthy-GTEX", "Healthy-TCGA", "Cancer-TCGA"))
-
 ```
-
-
+### Using 2 genes to separate out healthy and tumor samples
+I'm going to use MIR497HG and PAFAH1B3 to create a 2D plot of the samples colored by their healthy / tumor status.  I'm choosing these two because they have large coefficients in the model and because they are inversely correlated with one another.
+```{r, fig.height=4, fig.width=4}
+df03 <- LogRegModel$modelDF[,c("PAFAH1B3", "MIR497HG")]    # BGN
+df03 <- data.frame(cbind(df03, col=as.factor(prognosis)))
+ggplot(df03) +
+   geom_point(aes(x=PAFAH1B3,y=MIR497HG,colour=as.factor(col))) +
+    #ylim(-2,5) + #theme_bw() + # (axis.text.x=element_text(angle=90)) +
+   scale_color_manual(name="Category",
+                         breaks = c("1", "2", "3"),
+                         values = c(colors3pal[1], colors3pal[2], colors3pal[3]),
+                         labels = c("Healthy-GTEX", "Healthy-TCGA", "Cancer-TCGA"))
+```
 #### Do some pairwise gene plots with large coefficients to see separating hyperplane
 
 #### How well does model with 5 predictors perform?  We'll have to read which ones they'd be off the Model, as they
