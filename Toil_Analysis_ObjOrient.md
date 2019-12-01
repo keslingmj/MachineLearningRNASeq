@@ -24,6 +24,10 @@ knitr::opts_chunk$set(echo = TRUE)
 #######################
 RSEM_COUNTS_FILE <- "/Users/mjk/Desktop/Tresorit_iOS/projects/RNA-Seq/MachineLearningRNASeq/toilSubsetRSEM382.txt"
 TOILGENEANNOT <- "~/RNA-Seq_2019/TOIL_Data/gencode.v23.annotation.gene.probemap"
+BIOMART_GENE_ATTR_FILE <- "/Users/mjk/Desktop/Tresorit_iOS/projects/RNA-Seq/MachineLearningRNASeq/geneAttr.csv"
+TCGA_ATTR_FILE <- "~/Desktop/Tresorit_iOS/projects/RNA-Seq/data/TCGA_Attributes_full.txt"
+WANG_MATRIX <- "/Users/mjk/Desktop/Tresorit_iOS/projects/RNA-Seq/data/wangBreastFPKM398_Attrib.txt"
+FULL_TOIL_DATA <- "/Users/mjk/RNA-Seq_2019/TOIL_Data/TcgaTargetGtex_gene_expected_count"
 SEED <- 233992812
 SEED2 <- 1011
 ```
@@ -160,6 +164,9 @@ toilTest <- toilTest %>% dplyr::select(-outcome)
 # convert back to matrices:
 toilTrain <- as.matrix(toilTrain)
 toilTest <- as.matrix(toilTest)
+
+# reclaim memory
+rm(toilSubset); rm(toilSubsetWide)
 ```
 
 Now create object starting with toilTrain data matrix
@@ -240,23 +247,29 @@ coefsToil <- coef(cv.Toil.lasso, s=cv.Toil.lasso$lambda.1se)
 
 ##########
 # Store model in a structure:
-storeMODEL <- function(coefsToil){
+storeMODEL <- function(coefsToil, train=train){
    idx <- which(coefsToil[,1] != 0)
    predictorFullNames <- rownames(coefsToil)[idx]
+   colIDs <- which(colnames(train$M_norm) %in% 
+                   predictorFullNames) 
+   tmpDF <- train$M_norm[,colIDs]
+   predGeneNames <- gsub("\\.ENSG.*","", predictorFullNames)
+   colnames(tmpDF) <- predGeneNames[2:length(predGeneNames)]
 
    z <- list(
       fullModel = coefsToil,
       predFullNames = predictorFullNames,
       predCoefs = coefsToil[idx],
-      predGeneNames = gsub("\\.ENSG.*","", predictorFullNames), 
-      predEntrezID = gsub(".*.(ENSG.*)\\..*$","\\1", predictorFullNames) 
+      predGeneNames = predGeneNames, 
+      predEntrezID = gsub(".*.(ENSG.*)\\..*$","\\1", predictorFullNames),
+      modelDF = tmpDF                                 # lacks (Intercept)
    )
    
    class(z) <- "MODEL"
    return(z)
 }
 
-LogRegModel <- storeMODEL(coefsToil)
+LogRegModel <- storeMODEL(coefsToil, train)
 ```
 
 Working with Test Data
@@ -372,7 +385,7 @@ PC_plot <- data.frame(x=dfComponents[,1], y = dfComponents[,2], col=prognosis)
 colors3pal <- c("#FDAE6B", "#E6550D",  "#56B4E9")
 
 ggplot(PC_plot) + 
-   geom_point(aes(x=x, y=y, color=as.factor(col)), alpha=0.6) + 
+   geom_point(aes(x=x, y=y, color=as.factor(col))) + 
    ggtitle("PCA Plot of Training Data Using All Filtered Predictors of Toil Training Data") +
    xlab("PC1") + ylab("PC2") + theme_bw() +
    scale_color_manual(name="Category",
@@ -381,12 +394,12 @@ ggplot(PC_plot) +
                       labels = c("Healthy-GTEX", "Healthy-TCGA", "Cancer-TCGA"))
 ```
 
-![](Toil_Analysis_ObjOrient_files/figure-markdown_github/unnamed-chunk-22-1.png)
+![](Toil_Analysis_ObjOrient_files/figure-markdown_github/unnamed-chunk-23-1.png)
 
 We can see that even only employing the first 2 Principal Components, that:
 (1) there is very good separation between the tumors in the training set (blue) and the healthy samples.
 (2) We also see that the 2nd PC separates the outcome variable much better than the 1st PC.
-(3) We also notice that the healthy samples from TCGA (red) and the healthy samples from GTEX (orange) are also separated out. This has to do with how there's a batch effect between TCGA and GTEX and which was addressed by the Sloan Kettering group in the Combat paper (Wang, et. al.). Earlier work of mine on the Wang batch-corrected version of this dataset also performed well with the logistic regression with lasso model (not shown here). However, I have focused on the pre-batch corrected version here, because batch correcting would probably be difficult to implement for clinical samples.
+(3) We also notice that the healthy samples from TCGA (red) and the healthy samples from GTEX (orange) are also separated out. This has to do with how there's a batch effect between TCGA and GTEX and which was addressed by the Sloan Kettering group in the [Wang, et. al. Combat paper](https://www.nature.com/articles/sdata201861). Earlier work of mine on the Wang batch-corrected version of this dataset also performed well with the logistic regression with lasso model (not shown here). However, I have focused on the pre-batch corrected version here, because batch correcting would probably be difficult to implement for clinical samples.
 
 In light of the PC plot, it perhaps should not be surprising that an off-the-shelf algorithm would perform so well, as the variability in transcription is quite significant between healthy samples and tumors. It might be that after tissue type, healthy/tumor may impact variability in transcription more than any other factor.
 
@@ -418,7 +431,7 @@ dfCompMelt <- melt(dfComponents)
 plotPCs_1d(dfCompMelt)
 ```
 
-![](Toil_Analysis_ObjOrient_files/figure-markdown_github/unnamed-chunk-23-1.png) We see that the 2nd and 3rd PCs give pretty good outcome variable separation. Let's look at pairwise PC plots.
+![](Toil_Analysis_ObjOrient_files/figure-markdown_github/unnamed-chunk-24-1.png) We see that the 2nd and 3rd PCs give pretty good outcome variable separation. Let's look at pairwise PC plots.
 
 ``` r
 ls <- list()
@@ -431,7 +444,7 @@ grid.arrange(ls[[1]], ls[[2]], ls[[3]], ls[[4]], ls[[5]], ls[[6]],
              ls[[7]], ls[[8]], ls[[9]], ls[[10]], ncol=2)
 ```
 
-![](Toil_Analysis_ObjOrient_files/figure-markdown_github/unnamed-chunk-24-1.png) It appears that PC2 and PC2 together perhaps give the best separation.
+![](Toil_Analysis_ObjOrient_files/figure-markdown_github/unnamed-chunk-25-1.png) It appears that PC2 and PC2 together perhaps give the best separation.
 
 ### What Genes are the Model Predictors?
 
@@ -457,13 +470,14 @@ geneID_Name_Description <- getBM(attributes=c("ensembl_gene_id", "hgnc_id",
                                               "hgnc_symbol", "description"),
    values=geneNames,
    mart=ensembl)
-write.csv(geneID_Name_Description, file="geneAttr.csv")
+write.csv(geneID_Name_Description, file=BIOMART_GENE_ATTR_FILE)
 }
 #############
 
-Ensmbl_HGNC_SYM_DESC <- read.csv("geneAttr.csv", header=TRUE, stringsAsFactors = F)
+Ensmbl_HGNC_SYM_DESC <- read.csv(BIOMART_GENE_ATTR_FILE, header=TRUE, stringsAsFactors = F)
 predGeneAnnot <- Ensmbl_HGNC_SYM_DESC %>% dplyr::filter(ensembl_gene_id %in% ensembl_geneID) 
 # join with ensembl-coeff df-abs coeff
+rm(Ensmbl_HGNC_SYM_DESC)
 joinedAnnot <- inner_join(predGeneAnnot, ensembl_coefs, by=c("ensembl_gene_id" = "ensembl_geneID"))
 ```
 
@@ -473,58 +487,61 @@ joinedAnnot <- inner_join(predGeneAnnot, ensembl_coefs, by=c("ensembl_gene_id" =
 ``` r
 # arrange by order to desc abs coeff and print select columns:
 joinedAnnot$description <- gsub(" \\[.*$","",joinedAnnot$description) # %>% substr(1,40)
-print(as_tibble(joinedAnnot %>% arrange(desc(abs.modelCoefs.)) %>% dplyr::select("ensembl_gene_id", 
+modelAnnot <- as_tibble(joinedAnnot %>% arrange(desc(abs.modelCoefs.)) %>% dplyr::select("ensembl_gene_id", 
                                                           "hgnc_symbol", "modelCoefs",
-                                                          "description")), n=42)
+                                                          "description"))
+modelAnnot$hgnc_symbol[15] <- "RP5.1039K5.17"; modelAnnot$hgnc_symbol[40] <- "CTD"
+print(modelAnnot, n=42)
 ```
 
     ## # A tibble: 42 x 4
-    ##    ensembl_gene_id hgnc_symbol modelCoefs description                      
-    ##    <chr>           <chr>            <dbl> <chr>                            
-    ##  1 ENSG00000267532 MIR497HG      -0.490   mir-497-195 cluster host gene    
-    ##  2 ENSG00000182492 BGN            0.489   biglycan                         
-    ##  3 ENSG00000143742 SRP9           0.445   signal recognition particle 9    
-    ##  4 ENSG00000137727 ARHGAP20      -0.421   Rho GTPase activating protein 20 
-    ##  5 ENSG00000079462 PAFAH1B3       0.404   platelet activating factor acety…
-    ##  6 ENSG00000266964 FXYD1         -0.401   FXYD domain containing ion trans…
-    ##  7 ENSG00000165795 NDRG2         -0.219   NDRG family member 2             
-    ##  8 ENSG00000119771 KLHL29        -0.213   kelch like family member 29      
-    ##  9 ENSG00000101955 SRPX          -0.212   sushi repeat containing protein …
-    ## 10 ENSG00000106638 TBL2           0.171   transducin beta like 2           
-    ## 11 ENSG00000167705 RILP          -0.161   Rab interacting lysosomal protein
-    ## 12 ENSG00000163431 LMOD1         -0.156   leiomodin 1                      
-    ## 13 ENSG00000267365 KCNJ2-AS1     -0.154   KCNJ2 antisense RNA 1            
-    ## 14 ENSG00000230587 LINC02580     -0.147   long intergenic non-protein codi…
-    ## 15 ENSG00000272582 ""             0.140   novel transcript, antisense to C…
-    ## 16 ENSG00000241657 TRBV11-2       0.124   T cell receptor beta variable 11…
-    ## 17 ENSG00000103495 MAZ            0.117   MYC associated zinc finger prote…
-    ## 18 ENSG00000276386 CNTNAP3P2     -0.116   CNTNAP3 pseudogene 2             
-    ## 19 ENSG00000142910 TINAGL1       -0.109   tubulointerstitial nephritis ant…
-    ## 20 ENSG00000033100 CHPF2          0.106   chondroitin polymerizing factor 2
-    ## 21 ENSG00000189134 NKAPL         -0.106   NFKB activating protein like     
-    ## 22 ENSG00000106683 LIMK1          0.0913  LIM domain kinase 1              
-    ## 23 ENSG00000104888 SLC17A7       -0.0871  solute carrier family 17 member 7
-    ## 24 ENSG00000164694 FNDC1          0.0808  fibronectin type III domain cont…
-    ## 25 ENSG00000164885 CDK5           0.0774  cyclin dependent kinase 5        
-    ## 26 ENSG00000167394 ZNF668         0.0760  zinc finger protein 668          
-    ## 27 ENSG00000136160 EDNRB         -0.0751  endothelin receptor type B       
-    ## 28 ENSG00000168497 CAVIN2        -0.0622  caveolae associated protein 2    
-    ## 29 ENSG00000136014 USP44         -0.0614  ubiquitin specific peptidase 44  
-    ## 30 ENSG00000156284 CLDN8         -0.0493  claudin 8                        
-    ## 31 ENSG00000136295 TTYH3          0.0459  tweety family member 3           
-    ## 32 ENSG00000163041 H3F3A          0.0451  H3 histone family member 3A      
-    ## 33 ENSG00000139112 GABARAPL1     -0.0440  GABA type A receptor associated …
-    ## 34 ENSG00000154265 ABCA5         -0.0428  ATP binding cassette subfamily A…
-    ## 35 ENSG00000160179 ABCG1          0.0410  ATP binding cassette subfamily G…
-    ## 36 ENSG00000004799 PDK4          -0.0392  pyruvate dehydrogenase kinase 4  
-    ## 37 ENSG00000163884 KLF15         -0.0298  Kruppel like factor 15           
-    ## 38 ENSG00000196358 NTNG2          0.0228  netrin G2                        
-    ## 39 ENSG00000117410 ATP6V0B        0.0173  ATPase H+ transporting V0 subuni…
-    ## 40 ENSG00000269243 ""             0.0145  novel transcript, antisense RAB8A
-    ## 41 ENSG00000154736 ADAMTS5       -0.0113  ADAM metallopeptidase with throm…
-    ## 42 ENSG00000176973 FAM89B         0.00695 family with sequence similarity …
+    ##    ensembl_gene_id hgnc_symbol  modelCoefs description                     
+    ##    <chr>           <chr>             <dbl> <chr>                           
+    ##  1 ENSG00000267532 MIR497HG       -0.490   mir-497-195 cluster host gene   
+    ##  2 ENSG00000182492 BGN             0.489   biglycan                        
+    ##  3 ENSG00000143742 SRP9            0.445   signal recognition particle 9   
+    ##  4 ENSG00000137727 ARHGAP20       -0.421   Rho GTPase activating protein 20
+    ##  5 ENSG00000079462 PAFAH1B3        0.404   platelet activating factor acet…
+    ##  6 ENSG00000266964 FXYD1          -0.401   FXYD domain containing ion tran…
+    ##  7 ENSG00000165795 NDRG2          -0.219   NDRG family member 2            
+    ##  8 ENSG00000119771 KLHL29         -0.213   kelch like family member 29     
+    ##  9 ENSG00000101955 SRPX           -0.212   sushi repeat containing protein…
+    ## 10 ENSG00000106638 TBL2            0.171   transducin beta like 2          
+    ## 11 ENSG00000167705 RILP           -0.161   Rab interacting lysosomal prote…
+    ## 12 ENSG00000163431 LMOD1          -0.156   leiomodin 1                     
+    ## 13 ENSG00000267365 KCNJ2-AS1      -0.154   KCNJ2 antisense RNA 1           
+    ## 14 ENSG00000230587 LINC02580      -0.147   long intergenic non-protein cod…
+    ## 15 ENSG00000272582 RP5.1039K5.…    0.140   novel transcript, antisense to …
+    ## 16 ENSG00000241657 TRBV11-2        0.124   T cell receptor beta variable 1…
+    ## 17 ENSG00000103495 MAZ             0.117   MYC associated zinc finger prot…
+    ## 18 ENSG00000276386 CNTNAP3P2      -0.116   CNTNAP3 pseudogene 2            
+    ## 19 ENSG00000142910 TINAGL1        -0.109   tubulointerstitial nephritis an…
+    ## 20 ENSG00000033100 CHPF2           0.106   chondroitin polymerizing factor…
+    ## 21 ENSG00000189134 NKAPL          -0.106   NFKB activating protein like    
+    ## 22 ENSG00000106683 LIMK1           0.0913  LIM domain kinase 1             
+    ## 23 ENSG00000104888 SLC17A7        -0.0871  solute carrier family 17 member…
+    ## 24 ENSG00000164694 FNDC1           0.0808  fibronectin type III domain con…
+    ## 25 ENSG00000164885 CDK5            0.0774  cyclin dependent kinase 5       
+    ## 26 ENSG00000167394 ZNF668          0.0760  zinc finger protein 668         
+    ## 27 ENSG00000136160 EDNRB          -0.0751  endothelin receptor type B      
+    ## 28 ENSG00000168497 CAVIN2         -0.0622  caveolae associated protein 2   
+    ## 29 ENSG00000136014 USP44          -0.0614  ubiquitin specific peptidase 44 
+    ## 30 ENSG00000156284 CLDN8          -0.0493  claudin 8                       
+    ## 31 ENSG00000136295 TTYH3           0.0459  tweety family member 3          
+    ## 32 ENSG00000163041 H3F3A           0.0451  H3 histone family member 3A     
+    ## 33 ENSG00000139112 GABARAPL1      -0.0440  GABA type A receptor associated…
+    ## 34 ENSG00000154265 ABCA5          -0.0428  ATP binding cassette subfamily …
+    ## 35 ENSG00000160179 ABCG1           0.0410  ATP binding cassette subfamily …
+    ## 36 ENSG00000004799 PDK4           -0.0392  pyruvate dehydrogenase kinase 4 
+    ## 37 ENSG00000163884 KLF15          -0.0298  Kruppel like factor 15          
+    ## 38 ENSG00000196358 NTNG2           0.0228  netrin G2                       
+    ## 39 ENSG00000117410 ATP6V0B         0.0173  ATPase H+ transporting V0 subun…
+    ## 40 ENSG00000269243 CTD             0.0145  novel transcript, antisense RAB…
+    ## 41 ENSG00000154736 ADAMTS5        -0.0113  ADAM metallopeptidase with thro…
+    ## 42 ENSG00000176973 FAM89B          0.00695 family with sequence similarity…
 
 Of the 42 predictors, 3 are anti-sense RNAs, 1 pseudogene: (CNTNAP3 pseudogene 2), 1 non-protein coding gene, 1 micro RNA, and the others being protein-coding genes.
+2 of the genes are missing their symbol: the first is *RP5.1039K5.17* and the second is *CTD*.
 
 ### Expression of the 42 Predictors Across Healthy Samples and Tumors
 
@@ -550,16 +567,288 @@ ggplot(predict42scaledMelt, aes(x=Var2, y=value)) + #, colour=colr)) +
 
     ## Warning: Removed 12 rows containing missing values (geom_point).
 
-![](Toil_Analysis_ObjOrient_files/figure-markdown_github/unnamed-chunk-26-1.png)
+![](Toil_Analysis_ObjOrient_files/figure-markdown_github/unnamed-chunk-28-1.png) We can see that the majority of these gene predictors have either a higher level of expression in tumors (positive coefficient) or a higher level of expression in healthy tissues (negative coefficient). 2 genes seem to disciminate poorly--at least on their own. I thought they might all have coefficients very close to zero. However, they are mid-to-high range (RP5.1039K5.17 = 0.140 and TRBV11-2 = 0.124). Beyond this basic point, I haven't pursued this.
 
-#### Do some pairwise gene plots with large coefficients to see separating hyperplane
+### Using 2 genes to separate out healthy and tumor samples
 
-#### How well does model with 5 predictors perform? We'll have to read which ones they'd be off the Model, as they
+I'm going to use MIR497HG and PAFAH1B3 to create a 2D plot of the samples colored by their healthy / tumor status. I'm choosing these two because they have large coefficients in the model and because they are inversely correlated with one another.
 
-#### probably won't be the ones in this model with the 5 largest coefs.
+``` r
+df03 <- LogRegModel$modelDF[,c("PAFAH1B3", "MIR497HG")]    # BGN
+df03 <- data.frame(cbind(df03, col=as.factor(prognosis)))
+ggplot(df03) +
+   geom_point(aes(x=PAFAH1B3,y=MIR497HG,colour=as.factor(col))) +
+   theme_bw() +
+    #ylim(-2,5) + #theme_bw() + # (axis.text.x=element_text(angle=90)) +
+   scale_color_manual(name="Category",
+                         breaks = c("1", "2", "3"),
+                         values = c(colors3pal[1], colors3pal[2], colors3pal[3]),
+                         labels = c("Healthy-GTEX", "Healthy-TCGA", "Cancer-TCGA"))
+```
+
+![](Toil_Analysis_ObjOrient_files/figure-markdown_github/unnamed-chunk-29-1.png) We can see that 2 genes with coefficients that are large, but of opposite sign, nearly create a separating hyperplane between the tumors and the healthy samples. This recapitulates the earlier idea of how the gene expression programming of tumors have greatly diverged from that of healthy samples that we saw with the Principal Components plots.
+
+### Heatmap
+
+``` r
+samples <- factor(prognosis)
+sampleCols <- palette(colors3pal)[samples]           # set color of sample class
+
+# for the gene-column to be color-coded by the value of its coefficient,
+# the coefficients must be placed in the same order they appear in in the 
+# LogRegModel$modelDF dataframe.  modelAnnot$modelCoefs are where the coefficients
+# reside initially.
+
+geneCoefs <- data.frame(modelAnnot$modelCoefs)
+rownames(geneCoefs) <- modelAnnot$hgnc_symbol
+
+# QA: columns not matching
+# colnames(LogRegModel$modelDF)[!(colnames(LogRegModel$modelDF) %in% modelAnnot$hgnc_symbol)]
+# modelAnnot$hgnc_symbol[!(modelAnnot$hgnc_symbol %in% colnames(LogRegModel$modelDF))]
+
+# manually cleaning these up -- later the gene names should be derived from a common source
+colnames(LogRegModel$modelDF)[2] <- gsub("\\.", "-", colnames(LogRegModel$modelDF)[2])
+colnames(LogRegModel$modelDF)[11] <- gsub("\\.", "-", colnames(LogRegModel$modelDF)[11])
+colnames(LogRegModel$modelDF)[13] <- "CTD"
+colnames(LogRegModel$modelDF)[17] <- "CAVIN2"
+colnames(LogRegModel$modelDF)[31] <- "LINC02580"
+
+geneCoefsMatrixOrder <- geneCoefs[colnames(LogRegModel$modelDF),]    #reordering
+range01 <- function(x)(x-min(x))/diff(range(x))
+geneCols <- palette(brewer.pal(11, "Spectral"))[cut(range01(geneCoefsMatrixOrder), breaks=11, labels=FALSE)]
+
+hmcol <- colorRampPalette(c("#40004B", "#40004B", "#40004B", "#762A83", "#9970AB", 
+  "#F7F7F7", "#5AAE61", "#1B7837", "#00441B", "#00441B", "#00441B"))
+heatmap.2(as.matrix(LogRegModel$modelDF), col=hmcol, trace="none", cexRow = 0.15, cexCol = 0.5,  
+          ColSideColors = geneCols, RowSideColors = sampleCols, main = "Heatmap of Gene Predictors vs Samples")
+```
+
+![](Toil_Analysis_ObjOrient_files/figure-markdown_github/unnamed-chunk-30-1.png) \#\#\#\# How well does model with 5 predictors perform? We'll have to read which ones they'd be off the Model, as they \#\#\#\# probably won't be the ones in this model with the 5 largest coefs.
 
 #### Gene Ontology Analysis -- topGO
 
-#### Test on other cancers, sorted by stage
+Testing the Model Sensitivity on More RNASeq Samples
+----------------------------------------------------
+
+When the initial dataset of 382 samples were obtained from GTEX and TCGA, there were far more tumors available than healthy samples. All healthy samples were part of these 382 samples which were then split into 287 training samples and 95 test samples.
+
+However, there remain many more RNA-Seq samples from TCGA that have not yet been used in this study. I'd like to see how the model performs on them, and since there are so many, I thought that I'd first break them into their stage of cancer (I - IV) and test them in those groups. Since all of these samples are tumors, we'll further be measuring the sensitivity of the model. But since there are no healthy samples, we'll be unable to measure the specificity.
+
+Another point that I'll bring up is that in creating the set of 382 from an initial group of 398 samples, there was a filtering step where samples that had a low RNA quality score were eliminated from the set.
+
+In the dataset we'll now look at, I'm not performing any filtering step.
+
+The code is a bit extensive, partly because it hasn't been cleaned up with common functions. It's not shown in the .html nor .md versions of this file. It can be seen in the .Rmd version.
+
+1. Process the 4 datasets (stageOne, stageTwo, stageThree, stageFour)
+---------------------------------------------------------------------
+
+I'll process these datasets the same way as I did above. I'm still using the ZEROGENES that were defined by the training data for gene filtering. And I'm still using the Reference Sample defined in the training set for calculating the sample-to-sample scaling factors. \#\#\#\# A function for processing dataframes and making predictions
+
+``` r
+filterScaleNormalizePredict <- function(df, REF_MEANS, REF_SDS,
+                                        train, LogRegModel, useRef=0){
+   # if useRef==0, then geneNormalization done within df
+   # if useRef==1, then geneNormalization done with parameters from train 
+   # (REF_MEANS & REF_SDS)
+   
+   # 1b. convert to natural scale:
+   df$M_nat <- natural(df)
+   
+   # 2. subtract out ZEROEXPGENES, as defined in training set
+   df$M_filt <- df$M_nat[,-train$ZEROGENES]
+
+   # 2b. represent intensities as fraction of all signals in each sample
+   N <- apply(df$M_filt, 1, sum)
+   df$M_scaled <- apply(df$M_filt, 2, function(x) x / N)              
+   
+   df$RefSampleName <- train$RefSampleName             # transfer from train set
+   
+   # 3. Calc scaling factor, relative to REFSAMPLE (in train) and scale data
+   df$M_filtScaled <- data.frame(weightedTrimmedMean(df, train, TRUE))         
+   
+   # 4. Remove Non-Predictor Genes from Filtered Test Data, REF_MEANS, REF_SDS
+   coefsFullNames <- LogRegModel$predFullNames[2:length(LogRegModel$predFullNames)]
+   dfFiltScal42 <- df$M_filtScaled %>% dplyr::select(coefsFullNames)  
+
+   # 5. scale each gene by its stdev and offset by its mean.  Add intercept
+   if(useRef == 1){
+      REF_MEANS_Predictors <- REF_MEANS[coefsFullNames]
+      REF_SDS_Predictors <- REF_SDS[coefsFullNames]
+      df$M_norm <- t(apply(dfFiltScal42, 1, function(x){
+         (x - REF_MEANS_Predictors)/REF_SDS_Predictors}))}
+   if(useRef == 0){                       
+      SMP_MEANS <- apply(df$M_filtScaled, 2, mean)
+      SMP_SDS <- apply(df$M_filtScaled, 2, sd)
+      SMP_MEANS_Predictors <- SMP_MEANS[coefsFullNames]
+      SMP_SDS_Predictors <- SMP_SDS[coefsFullNames]
+      df$M_norm <- t(apply(dfFiltScal42, 1, function(x){
+         (x - SMP_MEANS_Predictors)/SMP_SDS_Predictors}))}
+   
+   dfFiltScaledSD <- cbind(rep(1,nrow(df$M_norm)), df$M_norm)
+   
+   # 6. perform predictions
+   testPredictions <- ifelse(dfFiltScaledSD %*% LogRegModel$predCoefs > 0, 1, 0)
+   return(testPredictions)
+}
+```
+
+Other TCGA Sample Sensitivity
+-----------------------------
+
+METHODOLOGY: Processing samples as above, with:
+1. The filtering of genes defined by the training set 2. The sample-to-sample scaling factors done relative to a Reference Sample defined in the training set 3. The centering and scaling of each gene about its mean and standard deviation, respectively, within the dataset at hand.
+\#\#\#\# Cancer Stage I Predictions
+
+``` r
+# stage 1 only   
+stageOne <- createDAT(stageOneDF)
+rm(stageOneDF)
+stage1Preds <- filterScaleNormalizePredict(stageOne, NULL, NULL, 
+                                           train, LogRegModel, FALSE)
+table(stageOneOutcome, stage1Preds)
+```
+
+    ##                stage1Preds
+    ## stageOneOutcome  0  1
+    ##               1 58 89
+
+#### Cancer Stage II Predictions
+
+``` r
+# stage 2 only   
+stageTwo <- createDAT(stageTwoDF)
+rm(stageTwoDF)
+stage2Preds <- filterScaleNormalizePredict(stageTwo, NULL, NULL, 
+                                           train, LogRegModel, FALSE)
+table(stageTwoOutcome, stage2Preds)
+```
+
+    ##                stage2Preds
+    ## stageTwoOutcome   0   1
+    ##               1 188 326
+
+#### Cancer Stage III Predictions
+
+``` r
+# stage 3 only   
+stageThree <- createDAT(stageThreeDF)
+rm(stageThreeDF)
+stage3Preds <- filterScaleNormalizePredict(stageThree, NULL, NULL, 
+                                           train, LogRegModel, FALSE)
+table(stageThreeOutcome, stage3Preds)
+```
+
+    ##                  stage3Preds
+    ## stageThreeOutcome   0   1
+    ##                 1  67 136
+
+#### Cancer Stage IV Predictions
+
+``` r
+# stage 4 only   
+stageFour <- createDAT(stageFourDF)
+rm(stageFourDF)
+stage4Preds <- filterScaleNormalizePredict(stageFour, NULL, NULL, 
+                                           train, LogRegModel, FALSE)
+table(stageFourOutcome, stage4Preds)
+```
+
+    ##                 stage4Preds
+    ## stageFourOutcome  0  1
+    ##                1  8 12
+
+We are getting terrible performance! Why?
+-----------------------------------------
+
+It has to do with the centering and scaling of each gene about its mean and standard deviation. Let's look at a figure, where for the first 10 gene predictors (out of a total of 42), we create a boxplot for
+(a) all 287 training samples (red)
+(b) just the 139 healthy training samples (green)
+(c) just the 148 training tumors (blue)
+
+``` r
+numCols <-10
+fullTrainPredictors <- LogRegModel$modelDF[,1:numCols]
+healthyTrainPredictors <- fullTrainPredictors[1:139,]
+tumorTrainPredictors <- fullTrainPredictors[140:287,]
+
+trainPredictorsMelt <- cbind(rbind(melt(fullTrainPredictors), melt(healthyTrainPredictors), 
+                             melt(tumorTrainPredictors)), class=c(rep("All", numCols*287), 
+                                                            rep("Healthy", numCols*139), 
+                                                            rep("Tumor", numCols*148)))
+ggplot(trainPredictorsMelt, aes(x=Var2, y=value, fill=class)) + geom_boxplot() +
+   ylim(-2,2) + theme_bw() +
+   xlab("Gene Predictors") + ylab("Number of STDEV of Expression vs Mean")
+```
+
+    ## Warning: Removed 234 rows containing non-finite values (stat_boxplot).
+
+![](Toil_Analysis_ObjOrient_files/figure-markdown_github/unnamed-chunk-37-1.png) This figure illustrates the problem we're having quite well.
+The gene-level centering and scaling we just performed on the Stage I-IV TCGA tumors was done based ONLY on the tumor data for each gene (blue boxplot). However, the training model was created based on the gene-level normalization from the red boxplot.
+
+Looking at the gene on the left (FAM89B), we see that the mean across healthy sample and tumors is about -0.25, but amongst only the tumors, the mean is about +0.45. What that means is that there will be many samples whose FAM89B level lies between -0.25 and +0.45. In these cases, they would have had POSITIVE post-normalization values if all samples had been used, but NEGATIVE values if just the tumor samples had been used. In these cases, the data would have been working counter to the model due to erroneous gene-level centering and scaling.
+
+Looking at the figure, we see that this issue is relevant for many genes.
+
+If this is true, then it should be the case that if we take the mean and standard deviation for all 42 genes in the training set (red boxplot) and apply these numbers to the gene-level centering and scaling of the Stage I-IV Predictions, our model performance should greatly improve.
+
+### Testing the Gene-Level Centering and Scaling Hypothesis
+
+We start out by calculating the gene-level means and standard deviations for all genes *in the training set*. We then apply these values for the Stage I-IV test sets
+
+``` r
+REF_MEANS <- apply(train$M_filtScaled, 2, mean)
+REF_SDS <- apply(train$M_filtScaled, 2, sd)
+```
+
+``` r
+# stage 1 only   
+#stageOne <- createDAT(stageOneDF)
+stage1Preds <- filterScaleNormalizePredict(stageOne, REF_MEANS, REF_SDS, 
+                                           train, LogRegModel, TRUE)
+table(stageOneOutcome, stage1Preds)
+```
+
+    ##                stage1Preds
+    ## stageOneOutcome   1
+    ##               1 147
+
+``` r
+# stage 2 only   
+#stageTwo <- createDAT(stageTwoDF)
+stage2Preds <- filterScaleNormalizePredict(stageTwo, REF_MEANS, REF_SDS, 
+                                           train, LogRegModel, TRUE)
+table(stageTwoOutcome, stage2Preds)
+```
+
+    ##                stage2Preds
+    ## stageTwoOutcome   0   1
+    ##               1   5 509
+
+``` r
+# stage 3 only   
+#stageThree <- createDAT(stageThreeDF)
+stage3Preds <- filterScaleNormalizePredict(stageThree, REF_MEANS, REF_SDS, 
+                                           train, LogRegModel, TRUE)
+table(stageThreeOutcome, stage3Preds)
+```
+
+    ##                  stage3Preds
+    ## stageThreeOutcome   0   1
+    ##                 1   3 200
+
+``` r
+# stage 4 only   
+#stageFour <- createDAT(stageFourDF)
+stage4Preds <- filterScaleNormalizePredict(stageFour, REF_MEANS, REF_SDS, 
+                                           train, LogRegModel, TRUE)
+table(stageFourOutcome, stage4Preds)
+```
+
+    ##                 stage4Preds
+    ## stageFourOutcome  1
+    ##                1 20
+
+We see that our results are greatly improved! The sensitivity is not proportional nor inversely proportional to the stage of the disease. Overall, we have a sensitivity of 99.1%!
 
 #### GRanges that look for common enhancers? Any way to see these across these 42 genes? ENCODE
