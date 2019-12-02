@@ -125,12 +125,13 @@ toilSubset <- preProcess(toilSubset, TOILGENEANNOT)
 
 Up to this point, all we've done is grabbed the Toil RSEM output data and re-formatted it. It's still in log2-format.
 
-Next: \#\#\#\#\#\#\#\# WRONG ORDER \#\#\#\#\#\#\#\#\# FIX this text.
+Next:
 1. Randomly select samples to be in the training and test sets in a way that keeps the ratio of healthy/tumors at about 50/50
-2. perform edgeR normalization with a reference sample to control for depth-of-sequencing effects. Use same reference for training and (future) test set
-3.filter out genes (independent if possible)
-4. look at overall structure using t-SNE and PCA
+2. Filter out genes with very low or zero expression across the data set.
+3. perform edgeR normalization with a reference sample to control for depth-of-sequencing effects. Use same reference for training and (future) test set
+4. Center and scale each gene about its mean and std deviation, respectively.
 5. Perform ML
+6. Test the model on the test set.
 
 ``` r
 toilSubsetWide <- t(toilSubset)                               # transpose matrix
@@ -316,13 +317,13 @@ test$RefSampleName <- train$RefSampleName      # RefSampleName from training set
 test$M_filtScaled <- weightedTrimmedMean(test, train, 1)     # filtered & scaled
 ```
 
-### 3. Gene-level Normalization on Test Set
+#### 3. Gene-level Normalization on Test Set
 
 ``` r
 test$M_norm <- normalizeGenes(test$M_filtScaled, TRUE, FALSE)
 ```
 
-### 4. Remove Non-Predictor Genes from Filtered Test Data
+#### 4. Remove Non-Predictor Genes from Filtered Test Data
 
 We're just keeping the 42 predictors from toilTestFiltScaled
 
@@ -332,7 +333,7 @@ colIDs <- which(colnames(test$M_norm) %in%
 toilTestFiltScal42 <- test$M_norm[,colIDs]                    # SEPARATE FROM OBJECT
 ```
 
-### 5. Test Set Sensitivity and Specificity
+#### 5. Test Set Sensitivity and Specificity
 
 First we add an intercept column to test predictor variables, then we perform matrix multiplication with the predictor coefficients and then look at the prediction performance in the confusion matrix.
 
@@ -398,8 +399,10 @@ ggplot(PC_plot) +
 
 We can see that even only employing the first 2 Principal Components, that:
 (1) there is very good separation between the tumors in the training set (blue) and the healthy samples.
-(2) We also see that the 2nd PC separates the outcome variable much better than the 1st PC.
-(3) We also notice that the healthy samples from TCGA (red) and the healthy samples from GTEX (orange) are also separated out. This has to do with how there's a batch effect between TCGA and GTEX and which was addressed by the Sloan Kettering group in the [Wang, et. al. Combat paper](https://www.nature.com/articles/sdata201861). Earlier work of mine on the Wang batch-corrected version of this dataset also performed well with the logistic regression with lasso model (not shown here). However, I have focused on the pre-batch corrected version here, because batch correcting would probably be difficult to implement for clinical samples.
+
+1.  We also see that the 2nd PC separates the outcome variable much better than the 1st PC.
+
+2.  We also notice that the healthy samples from TCGA (red) and the healthy samples from GTEX (orange) are also separated out. This has to do with how there's a batch effect between TCGA and GTEX and which was addressed by the Sloan Kettering group in the [Wang, et. al. Combat paper](https://www.nature.com/articles/sdata201861). Earlier work of mine on the Wang batch-corrected version of this dataset also performed well with the logistic regression with lasso model (not shown here). However, I have focused on the pre-batch corrected version here, because batch correcting would probably be difficult to implement for clinical samples.
 
 In light of the PC plot, it perhaps should not be surprising that an off-the-shelf algorithm would perform so well, as the variability in transcription is quite significant between healthy samples and tumors. It might be that after tissue type, healthy/tumor may impact variability in transcription more than any other factor.
 
@@ -622,7 +625,7 @@ heatmap.2(as.matrix(LogRegModel$modelDF), col=hmcol, trace="none", cexRow = 0.15
           ColSideColors = geneCols, RowSideColors = sampleCols, main = "Heatmap of Gene Predictors vs Samples")
 ```
 
-![](Toil_Analysis_ObjOrient_files/figure-markdown_github/unnamed-chunk-30-1.png)
+![](Toil_Analysis_ObjOrient_files/figure-markdown_github/unnamed-chunk-30-1.png) The heatmap just provides another way at looking at the closeness of relationship between the different gene predictors and likewise between the different samples. The color-coding of the columns and rows has a bug in it at the moment.
 
 Testing the Model Sensitivity on More RNASeq Samples
 ----------------------------------------------------
@@ -694,7 +697,11 @@ Other TCGA Sample Sensitivity
 -----------------------------
 
 METHODOLOGY: Processing samples as above, with:
-1. The filtering of genes defined by the training set 2. The sample-to-sample scaling factors done relative to a Reference Sample defined in the training set 3. The centering and scaling of each gene about its mean and standard deviation, respectively, within the dataset at hand.
+1. The filtering of genes defined by the training set
+
+1.  The sample-to-sample scaling factors done relative to a Reference Sample defined in the training set
+
+2.  The centering and scaling of each gene about its mean and standard deviation, respectively, within the dataset at hand.
 
 #### Cancer Stage I Predictions
 

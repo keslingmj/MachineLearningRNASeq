@@ -301,13 +301,14 @@ toilSubset <- preProcess(toilSubset, TOILGENEANNOT)
 ### Create Test and Training Sets
 Up to this point, all we've done is grabbed the Toil RSEM output data and re-formatted it.  It's still in log2-format.
 
-Next:     ######## WRONG ORDER ######### FIX this text.  
+Next:    
 1. Randomly select samples to be in the training and test sets in a way that
 keeps the ratio of healthy/tumors at about 50/50  
-2. perform edgeR normalization with a reference sample to control for depth-of-sequencing effects.  Use same reference for training and (future) test set  
-3.filter out genes (independent if possible)  
-4. look at overall structure using t-SNE and PCA  
+2. Filter out genes with very low or zero expression across the data set.  
+3. perform edgeR normalization with a reference sample to control for depth-of-sequencing effects.  Use same reference for training and (future) test set  
+4. Center and scale each gene about its mean and std deviation, respectively.    
 5. Perform ML  
+6. Test the model on the test set.  
 
 ```{r}
 toilSubsetWide <- t(toilSubset)                               # transpose matrix
@@ -462,19 +463,19 @@ test$M_scaled <- tmp[[2]];
 test$RefSampleName <- train$RefSampleName      # RefSampleName from training set
 test$M_filtScaled <- weightedTrimmedMean(test, train, 1)     # filtered & scaled
 ```
-### 3. Gene-level Normalization on Test Set
+#### 3. Gene-level Normalization on Test Set
 
 ```{r}
 test$M_norm <- normalizeGenes(test$M_filtScaled, TRUE, FALSE)
 ```
-### 4. Remove Non-Predictor Genes from Filtered Test Data
+#### 4. Remove Non-Predictor Genes from Filtered Test Data
 We're just keeping the 42 predictors from toilTestFiltScaled
 ```{r}
 colIDs <- which(colnames(test$M_norm) %in% 
                    LogRegModel$predFullNames[2:length(LogRegModel$predFullNames)])
 toilTestFiltScal42 <- test$M_norm[,colIDs]                    # SEPARATE FROM OBJECT
 ```
-### 5. Test Set Sensitivity and Specificity
+#### 5. Test Set Sensitivity and Specificity
 First we add an intercept column to test predictor variables, then we perform
 matrix multiplication with the predictor coefficients and then look at the 
 prediction performance in the confusion matrix.
@@ -533,10 +534,12 @@ ggplot(PC_plot) +
     
 We can see that even only employing the first 2 Principal Components, that:  
 (1) there is very good separation between the tumors in the training set (blue) and the healthy samples.  
-(2) We also see that the 2nd PC separates the outcome variable much better than the 1st PC.  
-(3) We also notice that the healthy samples from TCGA (red) and the healthy samples from GTEX (orange) are also separated out.  This has to do with how there's a batch effect between TCGA and GTEX and which was addressed by the Sloan Kettering group in the [Wang, et. al. Combat paper](https://www.nature.com/articles/sdata201861).  Earlier work of mine on the Wang batch-corrected version of this dataset also performed well with the logistic regression with lasso model (not shown here).  However, I have focused on the pre-batch corrected version here, because batch correcting would probably be difficult to implement for clinical samples.
 
-In light of the PC plot, it perhaps should not be surprising that an off-the-shelf algorithm would perform so well, as the variability in transcription is quite significant between healthy samples and tumors.  It might be that after tissue type, healthy/tumor may impact variability in transcription more than any other factor.
+(2) We also see that the 2nd PC separates the outcome variable much better than the 1st PC.  
+
+(3) We also notice that the healthy samples from TCGA (red) and the healthy samples from GTEX (orange) are also separated out.  This has to do with how there's a batch effect between TCGA and GTEX and which was addressed by the Sloan Kettering group in the [Wang, et. al. Combat paper](https://www.nature.com/articles/sdata201861).  Earlier work of mine on the Wang batch-corrected version of this dataset also performed well with the logistic regression with lasso model (not shown here).  However, I have focused on the pre-batch corrected version here, because batch correcting would probably be difficult to implement for clinical samples.  
+
+In light of the PC plot, it perhaps should not be surprising that an off-the-shelf algorithm would perform so well, as the variability in transcription is quite significant between healthy samples and tumors.  It might be that after tissue type, healthy/tumor may impact variability in transcription more than any other factor.  
 
 ### Top 5 Principal Components
 I wanted to see if any other of the top PCs were good at separating healthy samples from tumors.  
@@ -693,6 +696,7 @@ hmcol <- colorRampPalette(c("#40004B", "#40004B", "#40004B", "#762A83", "#9970AB
 heatmap.2(as.matrix(LogRegModel$modelDF), col=hmcol, trace="none", cexRow = 0.15, cexCol = 0.5,  
           ColSideColors = geneCols, RowSideColors = sampleCols, main = "Heatmap of Gene Predictors vs Samples")
 ```
+The heatmap just provides another way at looking at the closeness of relationship between the different gene predictors and likewise between the different samples.  The color-coding of the columns and rows has a bug in it at the moment.  
 
 ## Testing the Model Sensitivity on More RNASeq Samples
 When the initial dataset of 382 samples were obtained from GTEX and TCGA, there were far more tumors available than healthy samples.  All healthy samples were part of these 382 samples which were then split into 287 training samples and 95 test samples.  
@@ -703,7 +707,8 @@ Another point that I'll bring up is that in creating the set of 382 from an init
 
 In the dataset we'll now look at, I'm not performing any filtering step.  
 
-The code is a bit extensive, partly because it hasn't been cleaned up with common functions.  It's not shown in the .html nor .md versions of this file.  It can be seen in the .Rmd version.  
+The code is a bit extensive, partly because it hasn't been cleaned up with common functions.  It's not shown in the .html nor .md versions of this file.  It can be seen in the .Rmd version. 
+
 ```{r, include=FALSE}
 
 
@@ -859,6 +864,7 @@ stageThreeOutcome <- rep(1,dim(stageThreeDF)[1])
 stageFourOutcome <- rep(1,dim(stageFourDF)[1])
 stageHealthyOutcome <- rep(0,dim(stageHealthyDF)[1])
 ```
+
 ## 1. Process the 4 datasets (stageOne, stageTwo, stageThree, stageFour)
 I'll process these datasets the same way as I did above.  I'm still using the ZEROGENES that were defined by the training data for gene filtering.  And I'm still using the Reference Sample defined in the training set for calculating the sample-to-sample scaling factors.
 #### A function for processing dataframes and making predictions
@@ -911,9 +917,11 @@ filterScaleNormalizePredict <- function(df, REF_MEANS, REF_SDS,
 ```
 ## Other TCGA Sample Sensitivity
 METHODOLOGY: Processing samples as above, with:  
-1. The filtering of genes defined by the training set
+1. The filtering of genes defined by the training set  
+
 2. The sample-to-sample scaling factors done relative to a Reference Sample defined
-in the training set
+in the training set  
+
 3. The centering and scaling of each gene about its mean and standard deviation, 
 respectively, within the dataset at hand.  
 
