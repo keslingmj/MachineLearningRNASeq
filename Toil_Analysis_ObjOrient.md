@@ -541,7 +541,6 @@ print(modelAnnot, n=42)
     ## 42 ENSG00000176973 FAM89B          0.00695 family with sequence similarity…
 
 Of the 42 predictors, 3 are anti-sense RNAs, 1 pseudogene: (CNTNAP3 pseudogene 2), 1 non-protein coding gene, 1 micro RNA, and the others being protein-coding genes.
-2 of the genes are missing their symbol: the first is *RP5.1039K5.17* and the second is *CTD*.
 
 ### Expression of the 42 Predictors Across Healthy Samples and Tumors
 
@@ -623,9 +622,7 @@ heatmap.2(as.matrix(LogRegModel$modelDF), col=hmcol, trace="none", cexRow = 0.15
           ColSideColors = geneCols, RowSideColors = sampleCols, main = "Heatmap of Gene Predictors vs Samples")
 ```
 
-![](Toil_Analysis_ObjOrient_files/figure-markdown_github/unnamed-chunk-30-1.png) \#\#\#\# How well does model with 5 predictors perform? We'll have to read which ones they'd be off the Model, as they \#\#\#\# probably won't be the ones in this model with the 5 largest coefs.
-
-#### Gene Ontology Analysis -- topGO
+![](Toil_Analysis_ObjOrient_files/figure-markdown_github/unnamed-chunk-30-1.png)
 
 Testing the Model Sensitivity on More RNASeq Samples
 ----------------------------------------------------
@@ -698,7 +695,8 @@ Other TCGA Sample Sensitivity
 
 METHODOLOGY: Processing samples as above, with:
 1. The filtering of genes defined by the training set 2. The sample-to-sample scaling factors done relative to a Reference Sample defined in the training set 3. The centering and scaling of each gene about its mean and standard deviation, respectively, within the dataset at hand.
-\#\#\#\# Cancer Stage I Predictions
+
+#### Cancer Stage I Predictions
 
 ``` r
 # stage 1 only   
@@ -850,5 +848,3 @@ table(stageFourOutcome, stage4Preds)
     ##                1 20
 
 We see that our results are greatly improved! The sensitivity is not proportional nor inversely proportional to the stage of the disease. Overall, we have a sensitivity of 99.1%!
-
-#### GRanges that look for common enhancers? Any way to see these across these 42 genes? ENCODE
