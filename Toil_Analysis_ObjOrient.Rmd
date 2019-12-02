@@ -52,6 +52,7 @@ require(heatmap3)
 library(RColorBrewer)
 require(gplots)
 require(BBmisc)
+require(topGO)
 ```
 
 #### Hidden Functions
@@ -692,10 +693,6 @@ hmcol <- colorRampPalette(c("#40004B", "#40004B", "#40004B", "#762A83", "#9970AB
 heatmap.2(as.matrix(LogRegModel$modelDF), col=hmcol, trace="none", cexRow = 0.15, cexCol = 0.5,  
           ColSideColors = geneCols, RowSideColors = sampleCols, main = "Heatmap of Gene Predictors vs Samples")
 ```
-#### How well does model with 5 predictors perform?  We'll have to read which ones they'd be off the Model, as they
-#### probably won't be the ones in this model with the 5 largest coefs.
-
-#### Gene Ontology Analysis -- topGO
 
 ## Testing the Model Sensitivity on More RNASeq Samples
 When the initial dataset of 382 samples were obtained from GTEX and TCGA, there were far more tumors available than healthy samples.  All healthy samples were part of these 382 samples which were then split into 287 training samples and 95 test samples.  
@@ -919,6 +916,7 @@ METHODOLOGY: Processing samples as above, with:
 in the training set
 3. The centering and scaling of each gene about its mean and standard deviation, 
 respectively, within the dataset at hand.  
+
 #### Cancer Stage I Predictions
 ```{r}
 # stage 1 only   
@@ -1022,6 +1020,3 @@ stage4Preds <- filterScaleNormalizePredict(stageFour, REF_MEANS, REF_SDS,
 table(stageFourOutcome, stage4Preds)
 ```
 We see that our results are greatly improved!  The sensitivity is not proportional nor inversely proportional to the stage of the disease.  Overall, we have a sensitivity of 99.1%!
-
-
-#### GRanges that look for common enhancers?  Any way to see these across these 42 genes?  ENCODE
