@@ -912,7 +912,7 @@ filterScaleNormalizePredict <- function(df, REF_MEANS, REF_SDS,
    
    # 6. perform predictions
    testPredictions <- ifelse(dfFiltScaledSD %*% LogRegModel$predCoefs > 0, 1, 0)
-   return(testPredictions)
+   return(list(pred=testPredictions, DAT=df))
 }
 ```
 ## Other TCGA Sample Sensitivity
@@ -930,8 +930,9 @@ respectively, within the dataset at hand.
 # stage 1 only   
 stageOne <- createDAT(stageOneDF)
 rm(stageOneDF)
-stage1Preds <- filterScaleNormalizePredict(stageOne, NULL, NULL, 
+tmp <- filterScaleNormalizePredict(stageOne, NULL, NULL, 
                                            train, LogRegModel, FALSE)
+stage1Preds <- tmp$pred ; stageOneFull <- tmp$DAT
 table(stageOneOutcome, stage1Preds)
 ```
 #### Cancer Stage II Predictions
@@ -939,8 +940,9 @@ table(stageOneOutcome, stage1Preds)
 # stage 2 only   
 stageTwo <- createDAT(stageTwoDF)
 rm(stageTwoDF)
-stage2Preds <- filterScaleNormalizePredict(stageTwo, NULL, NULL, 
+tmp <- filterScaleNormalizePredict(stageTwo, NULL, NULL, 
                                            train, LogRegModel, FALSE)
+stage2Preds <- tmp$pred ; stageTwoFull <- tmp$DAT
 table(stageTwoOutcome, stage2Preds)
 ```
 #### Cancer Stage III Predictions
@@ -948,8 +950,9 @@ table(stageTwoOutcome, stage2Preds)
 # stage 3 only   
 stageThree <- createDAT(stageThreeDF)
 rm(stageThreeDF)
-stage3Preds <- filterScaleNormalizePredict(stageThree, NULL, NULL, 
+tmp <- filterScaleNormalizePredict(stageThree, NULL, NULL, 
                                            train, LogRegModel, FALSE)
+stage3Preds <- tmp$pred ; stageThreeFull <- tmp$DAT
 table(stageThreeOutcome, stage3Preds)
 ```
 #### Cancer Stage IV Predictions
@@ -957,8 +960,9 @@ table(stageThreeOutcome, stage3Preds)
 # stage 4 only   
 stageFour <- createDAT(stageFourDF)
 rm(stageFourDF)
-stage4Preds <- filterScaleNormalizePredict(stageFour, NULL, NULL, 
+tmp <- filterScaleNormalizePredict(stageFour, NULL, NULL, 
                                            train, LogRegModel, FALSE)
+stage4Preds <- tmp$pred ; stageFourFull <- tmp$DAT
 table(stageFourOutcome, stage4Preds)
 ```
 ## We are getting terrible performance!  Why?
@@ -1001,30 +1005,241 @@ REF_SDS <- apply(train$M_filtScaled, 2, sd)
 ```{r}
 # stage 1 only   
 #stageOne <- createDAT(stageOneDF)
-stage1Preds <- filterScaleNormalizePredict(stageOne, REF_MEANS, REF_SDS, 
+tmp <- filterScaleNormalizePredict(stageOne, REF_MEANS, REF_SDS, 
                                            train, LogRegModel, TRUE)
+stage1Preds <- tmp$pred ; stageOneFull <- tmp$DAT
 table(stageOneOutcome, stage1Preds)
 ```
 ```{r}
 # stage 2 only   
 #stageTwo <- createDAT(stageTwoDF)
-stage2Preds <- filterScaleNormalizePredict(stageTwo, REF_MEANS, REF_SDS, 
+tmp <- filterScaleNormalizePredict(stageTwo, REF_MEANS, REF_SDS, 
                                            train, LogRegModel, TRUE)
+stage2Preds <- tmp$pred ; stageTwoFull <- tmp$DAT
 table(stageTwoOutcome, stage2Preds)
 ```
 
 ```{r}
 # stage 3 only   
 #stageThree <- createDAT(stageThreeDF)
-stage3Preds <- filterScaleNormalizePredict(stageThree, REF_MEANS, REF_SDS, 
+tmp <- filterScaleNormalizePredict(stageThree, REF_MEANS, REF_SDS, 
                                            train, LogRegModel, TRUE)
+stage3Preds <- tmp$pred ; stageThreeFull <- tmp$DAT
 table(stageThreeOutcome, stage3Preds)
 ```
 ```{r}
 # stage 4 only   
 #stageFour <- createDAT(stageFourDF)
-stage4Preds <- filterScaleNormalizePredict(stageFour, REF_MEANS, REF_SDS, 
+tmp <- filterScaleNormalizePredict(stageFour, REF_MEANS, REF_SDS, 
                                            train, LogRegModel, TRUE)
+stage4Preds <- tmp$pred ; stageFourFull <- tmp$DAT
 table(stageFourOutcome, stage4Preds)
 ```
 We see that our results are greatly improved!  The sensitivity is not proportional nor inversely proportional to the stage of the disease.  Overall, we have a sensitivity of 99.1%!
+
+## Principal Components Plot of Cancer Stage
+I'd like to see how well the first 2 principal components separate out the tumors of various stages.
+I'm going to catenate all datasets of the 4 stages of cancer and then create the PC plot.  
+
+Earlier work used the ZEROGENES identified by the training set to filter the other various test sets.  However, since I'm going to make a new set of PC plots, it's important to not have genes whose SD is 0.001, as the outliers will dominate the variance.  Therefore, I'll start fresh with the concatenated tumor samples, create a training set from that, and proceed from there.  
+```{r, fig.height=8, fig.width=8, dpi=300}
+prognosis4stage <- c(rep(1, nrow(stageOneFull$M_orig)), rep(2, nrow(stageTwoFull$M_orig)),
+  rep(3, nrow(stageThreeFull$M_orig)), rep(4, nrow(stageFourFull$M_orig)))
+df4stages_orig <- rbind(stageOneFull$M_orig, stageTwoFull$M_orig, 
+                   stageThreeFull$M_orig, stageFourFull$M_orig)
+
+#dim(df4stages_orig) # 884 x 60498
+
+# random sampling of 147 samples that are stage 2-4 tumors:
+set.seed(329832)
+sg234Idx <- sample(which(prognosis4stage!=T), nrow(stageOne$M_orig))  
+
+# grab all stage one sample plus the selected stage 2-4 samples
+multiStage_orig <- df4stages_orig[c(1:nrow(stageOne$M_orig),sg234Idx),]
+
+# need outcome and updated prognosis4stage
+prognosisMultiStage <- c(rep(1,nrow(stageOne$M_orig)),prognosis4stage[sg234Idx])
+outcomeStage <- c(rep(0, nrow(stageOne$M_orig)),
+                  rep(1, length(prognosis4stage[sg234Idx])))
+
+# now split into training and test sets
+set.seed(SEED)
+idxTrain <- caTools::sample.split(outcomeStage, SplitRatio = 0.75)
+train4stage_orig <- multiStage_orig[idxTrain==T,]
+test4stage_orig <- multiStage_orig[idxTrain==F,]
+train4stage_outcome <- outcomeStage[idxTrain==T]
+test4stage_outcome <- outcomeStage[idxTrain==F]
+progn4stage <- prognosisMultiStage[idxTrain==T]
+
+# add train4stage and test4stage to DAT structure
+train4stage <- createDAT(train4stage_orig)
+test4stage <- createDAT(test4stage_orig)
+
+# add other variables and process new dataset
+train4stage$outcome <- train4stage_outcome
+test4stage$outcome <- test4stage_outcome
+
+train4stage$M_nat <- natural(train4stage)
+
+#hist(apply(train4stage$M_orig, 2, function(x) quantile(x)[4]), breaks=100, main="Histogram of each gene's 75th quantile of expression.", xlab="log2(Est Counts)")
+
+tmp <- filterGenes(train4stage)
+train4stage$ZEROGENES <- tmp[[1]]; train4stage$M_filt <- tmp[[2]]
+
+tmp <- pickRefSample(train4stage)
+train4stage$M_scaled <- tmp[[2]]; train4stage$RefSampleName <- tmp[[1]]
+
+train4stage$M_filtScaled <- weightedTrimmedMean(train4stage)
+
+train4stage$M_norm <- normalizeGenes(train4stage$M_filtScaled, TRUE, FALSE)
+
+# clean up memory
+rm(stageOne, stageOneFull, stageTwo, stageTwoFull, stageThree, stageThreeFull,
+   stageFour, stageFourFull)
+```
+### Create PC Graph 
+
+```{r, dpi=300}
+PCs <- prcomp(train4stage$M_norm)                             # (data already scaled)
+nComp <- 2
+dfComponents <- predict(PCs, newdata=train4stage$M_norm)[,1:nComp]
+
+PC_plot <- data.frame(x=dfComponents[,1], y = dfComponents[,2], col=progn4stage)
+colors4pal <- c(rev(viridis::viridis(5)[2:5]))
+
+ggplot(PC_plot) + 
+   geom_point(aes(x=x, y=y, color=as.factor(col))) + 
+   ggtitle("PCA Plot of Stage I-IV Data Using All Filtered Predictors") +
+   xlab("PC1") + ylab("PC2") + theme_bw() + 
+   scale_color_manual(name="Category",
+                      breaks = c("1", "2", "3", "4"),
+                      values = c(colors4pal[1], colors4pal[2], colors4pal[3], colors4pal[4]),
+                      labels = c("Stage I", "Stage II", "Stage III", "Stage IV"))
+```
+I'm seeing poor separation looking at only PC1 and PC2.  Let's try all pair-wise combinations between PC1 and PC5.
+```{r, fig.height=14, fig.width=12, dpi=300}
+# THIS FUNCTION HAS SOME HARD-CODED PARAMETERS:
+plotPCs4col <- function(dfComponents, compIdx){
+   PC_plot <- data.frame(x=dfComponents[,compIdx[1]], y = dfComponents[,compIdx[2]], col=progn4stage)
+   colors4pal <- c(rev(viridis::viridis(5)[2:5]))
+   obj <<- ggplot(PC_plot) + 
+      geom_point(aes(x=x, y=y, color=as.factor(col)), alpha=0.6) + 
+      ggtitle("PCA Plot of Training Data Using All Filtered Predictors of Toil Training Data") +
+      xlab(paste0("PC",compIdx[1])) + ylab(paste0("PC", compIdx[2])) +
+      theme_bw() + 
+      scale_color_manual(name="Category",
+                         breaks = c("1", "2", "3", "4"),
+                         values = c(colors4pal[1], colors4pal[2], colors4pal[3], colors4pal[4]),
+                         labels = c("Stage I", "Stage II", "Stage III", "Stage IV"));
+   return(obj)
+}
+
+nComp <- 5
+dfComponents <- predict(PCs, newdata=train4stage$M_norm)[,1:nComp]
+
+ls <- list()
+pairs <- combn(nComp,2)
+for(idx in 1:ncol(pairs)){
+   pair <- pairs[,idx]
+   ls[[idx]] <- plotPCs4col(dfComponents, pair)                  # Add a MAIN TITLE and remove other titles
+}
+grid.arrange(ls[[1]], ls[[2]], ls[[3]], ls[[4]], ls[[5]], ls[[6]],
+             ls[[7]], ls[[8]], ls[[9]], ls[[10]], ncol=2)
+```
+While the combination of PC2 and PC5 tend to disperse the sample classes better than other pairs of the top PCs, the samples from the 4 stages of cancer are on top of one another.  It seems that PC5 alone does some separation of stage I from the others.  
+
+No 2 PCs at the top partition these 4 stages of cancer, or even close, but perhaps a much richer model will.  
+So let's go back to logistic regression with the lasso classifier, to see if class I from the other 3 classes, as class I has a reasonable number of examples, unless class IV.  
+```{r, fig.height=12, fig.width=12, dpi=300}
+set.seed(SEED2)
+fitToil.lasso <- glmnet(train4stage$M_norm, train4stage$outcome, family="binomial",
+                           alpha = 1)
+plot(fitToil.lasso, xvar="lambda", label=TRUE)
+```
+We can immediately see that this Lasso model has MANY more predictors than the healthy-tumor lasso model at the same value of log-λ.  
+
+### Cross-Validating the Model to Pick the Smallest, Well-Performing Model
+I'm going to look at cross-validating the model in order to pick the simplest one that performs well.
+```{r, fig.height=8, fig.width=8, dpi=300}
+set.seed(SEED2)                                # need same seed as previous step
+cv.Toil.lasso <- cv.glmnet(train4stage$M_norm, train4stage$outcome
+                           , family="binomial", alpha=1) 
+plot(cv.Toil.lasso)
+```
+It appears that we're looking at a very small model that's within 1 stdev of the minimum.  I'm guessing we'll have a not-very-good performance.
+
+#### Grab the coefficients and store the model
+```{r}
+coefsToil <- coef(cv.Toil.lasso, s=cv.Toil.lasso$lambda.1se)
+
+LogRegModel <- storeMODEL(coefsToil, train=train4stage)
+```
+The chosen model has only 8 predictors, all with small coefficients (< 0.1).
+
+#### test the test set
+```{r}
+test4stage$M_nat <- natural(test4stage)
+
+# subtract off ZEROGENES as defined in training set
+test4stage$M_filt <- test4stage$M_nat[, -train4stage$ZEROGENES]
+
+tmp <- pickRefSample(test4stage)            # only doing this to get scaled data
+test4stage$M_scaled <- tmp[[2]]; 
+test4stage$RefSampleName <- train4stage$RefSampleName # RefSampleName from train set
+test4stage$M_filtScaled <- weightedTrimmedMean(test4stage, train4stage, 1) # filtered & scaled
+
+test4stage$M_norm <- normalizeGenes(test4stage$M_filtScaled, TRUE, FALSE)
+```
+#### Remove Non-Predictor Genes from Filtered Test Data
+We're just keeping the 8 predictors 
+```{r}
+colIDs <- which(colnames(test4stage$M_norm) %in% 
+               LogRegModel$predFullNames[2:length(LogRegModel$predFullNames)])
+test4stagePred <- test4stage$M_norm[,colIDs]              # SEPARATE FROM OBJECT
+
+test4stagePred <- cbind(rep(1,nrow(test4stagePred)), test4stagePred)
+
+test4stagePredictions <- ifelse(test4stagePred %*% LogRegModel$predCoefs > 0, 1, 0)
+table(test4stage$outcome, test4stagePredictions)
+```
+These results show that I have absolutely no sensitivity nor specificity.
+
+## Support Vector Machine
+Given how the data are on top of each other in the PC plot, I'm going to see if SVM can tease apart the data a bit.
+
+```{r}
+require(e1071)
+svmfit <- svm(factor(train4stage$outcome) ~., data=train4stage$M_norm, 
+              kernel="radial", cost=5, scale=F)
+# this is getting a stack overflow.  So I'll just remove some predictors and see
+# if it'll complete
+# Let's calculate the first 10 PCs across each sample and see if we can run svm on it.
+pcDat <- data.frame(cbind(PCs$x[,1:10], outcome=as.factor(train4stage$outcome)))
+svmfit <- svm(outcome ~., data=pcDat, kernel="radial", cost=5, scale=F, 
+              probability=T, type='C-classification')
+
+# convert test set into the PCs defined by training set:
+testSetPCs <- predict(PCs, newdata=test4stage$M_norm)[,1:10]
+testPred <- predict(svmfit, testSetPCs,decision.values = T)    # getting 1.5 everywhere!!
+
+
+# let's even look at training data accuracy:
+trainPred <- ifelse(predict(svmfit, pcDat %>% dplyr::select(-outcome)) < 1.5, 1, 2) # only works with outcome var!
+table(train4stage$outcome, trainPred)              # 100% not believable.  plus the outcome var still there.
+
+# probably should do something to select cost parameters.  See ISLR book
+tune.out <- tune(svm, outcome ~., data=pcDat, kernel="radial",
+                 ranges=list(cost=c(0.001,0.01,0.1,1,5,10,100)))
+summary(tune.out)
+bestModel <- tune.out$best.model
+summary(bestModel)
+#plot(svmfit, pcDat)
+# x <- PCs$x[,c(2,5)]
+# x1 <- seq(-300, 200, length.out=100)
+# x2 <- seq(-150, 200, length.out=100)
+# xgrid <- expand.grid(X1=x1, X2=x2)
+# ygrid <- predict(svmfit, xgrid)
+# plot(xgrid, col=as.numeric(ygrid),pch=20,cex=.2) +
+#    points(x, col=pcDat$outcome, pch=19)
+# plot(pcDat$PC2, pcDat$PC5, col=pcDat$outcome)
+```
