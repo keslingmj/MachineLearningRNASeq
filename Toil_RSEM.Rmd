@@ -11,7 +11,7 @@ https://xenabrowser.net/datapages/?cohort=TCGA%20TARGET%20GTEx&removeHub=https%3
 There are 2 relevant *gene expression RNAseq* datasets there.  *RSEM expected_count (n=19,109)* which is used in this document, and *RSEM expected_count (DESeq2 standardized) (n=19,039)* which was used in the *Toil_Norm.Rmd* file.
 
 
-The *markdown* and *html* versions of this document have some of the code masked for better readability.  To view the full code, see the [.Rmd version].
+The *markdown* and *html* versions of this document have some of the code masked for better readability.  To view the full code, see the [.Rmd version](Toil_Analysis_ObjOrient.Rmd).
 
 ```{r setup, include=FALSE}
 knitr::opts_chunk$set(echo = TRUE)
@@ -209,7 +209,7 @@ Next, we select a reference sample within the training set and relative to that 
 #### 1. Removing genes whose expression is very close to zero.  
 We know that there are about 9103 genes that are never expressed (data not shown), but there are over 25000 genes whose 75th quantile-level expression is under 2^(0.2) - 1 = 0.14 counts. We really don't want to deal with those genes in selecting a reference sample, etc.
 ```{r, fig.height=5, fig.width=5, dpi=300}
-hist(apply(toilTrain, 2, function(x) quantile(x)[4]), breaks=100, main="Histogram of gene's 75th quantile of expression.", xlab="log2(Est Counts)")
+hist(apply(toilTrain, 2, function(x) quantile(x)[4]), breaks=100, main="Histogram of each gene's 75th quantile of expression.", xlab="log2(Est Counts)")
 ```
 We are going to filter out genes whose 75th quantile across 287 samples is less than 0.14 counts (log2(counts) < 0.2).
 ```{r}
@@ -566,10 +566,10 @@ We can see that 42 predictors gives us a model whose deviance is within 1-standa
 require(biomaRt)
 coefsToil <- coef(fitToil.lasso, s=cv.Toil.lasso$lambda.1se)
 allCoefsNames <- rownames(coefsToil)
-idx <- which(coefsToil!= 0)
+idx <- which(coefsToil[,1]!= 0)                          # Added "[,1]"
 coefsFullNames <- allCoefsNames[idx]                     # USED EXTENSIVELY BELOW
 
-coefsToilNonZero <- coefsToil[which(coefsToil!= 0)]
+coefsToilNonZero <- coefsToil[idx]                       # fixed
 #class(coefsToilNonZero)                 #### get to sort numerically based on abs value, desc
 coefsToilNZ_Abs <- abs(coefsToilNonZero)
 coefsShortNames <- gsub("\\..*$", "", coefsFullNames)
@@ -1137,6 +1137,14 @@ write.table(stageHealthyDF, "stageHealthyTest.txt", sep="\t", row.names = TRUE)
 ################################################## comment out lines of code above.
 
 stageOneDF <- read.csv("stageOneTest.txt", header=TRUE, sep="\t",
+           stringsAsFactors = FALSE)
+stageTwoDF <- read.csv("stageTwoTest.txt", header=TRUE, sep="\t",
+           stringsAsFactors = FALSE)
+stageThreeDF <- read.csv("stageThreeTest.txt", header=TRUE, sep="\t",
+           stringsAsFactors = FALSE)
+stageFourDF <- read.csv("stageFourTest.txt", header=TRUE, sep="\t",
+           stringsAsFactors = FALSE)
+stageHealthyDF <- read.csv("stageHealthyTest.txt", header=TRUE, sep="\t",
            stringsAsFactors = FALSE)
 # REPEAT
 

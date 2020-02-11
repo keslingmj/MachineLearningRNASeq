@@ -368,7 +368,7 @@ head(PutValidGenesSrtFC, n=10)
 jitterPlot3var2 <- function(df, var1, var2, var3, titl, pal){
    obj <- ggplot(df, aes(df[,var1], df[,var2]), colour=as.factor(df[,var3]))+ #as.factor() 
    geom_jitter(aes(col=as.factor(df[,var3])),size=1.0, height=0.3) +   #as.factor() needed
-   scale_color_manual(name="Category",
+      scale_color_manual(name="Category",
                       breaks = c("1", "2", "3"),
                       values = pal,
                       labels = c("Healthy-GTEX", "Healthy-TCGA", "Cancer-TCGA")) +

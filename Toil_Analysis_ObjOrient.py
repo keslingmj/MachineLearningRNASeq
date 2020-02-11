@@ -105,27 +105,29 @@ toilSubset = processColReorder(toilSubset)
 toilSubsetWide = toilSubset.T
 
 # B. create outcome variable and give it a common index (sample name)
+
+# add method for automatically determining #healthy and #tumor
+
 outcome = pd.DataFrame(pd.concat([pd.Series(np.zeros(185)), pd.Series(np.ones(197))],
                     ignore_index=True))
 outcome.rename(index=dict(zip(outcome.index,toilSubsetWide.index)), inplace=True)
+all(outcome.index == toilSubsetWide.index)
 
-# C. bind outcome var to df for even, random partitioning
-"""
-colNames = toilSubsetWide.columns
-tmp = pd.concat([toilSubsetWide, outcome], axis=1, ignore_index=True)
-# add column names
-tmpColNames=list(toilSubsetWide) + ['outcome']
-tmp.rename(columns=dict(zip(list(tmp), tmpColNames)), inplace=True)
-toilSubsetWide = tmp
-"""
 
 # C. split df and outcome into training and test sets
 toilTrain, toilTest, outcomeTrain, outcomeTest = \
     train_test_split(toilSubsetWide, outcome, test_size=0.25, random_state=SEED)
 # but did this maintain the ratio of 'healthy' and 'tumor' samples?
 
-# D. column reorder: GTEX, TCGA-healthy, TCGA-tumor
+# D. column reorder: GTEX, TCGA-healthy, TCGA-tumor for all 4 df's
+toilTrain = (processColReorder(toilTrain.T)).T
+outcomeTrain = outcomeTrain.loc[toilTrain.index,:]
+toilTest = (processColReorder(toilTest.T)).T
+outcomeTest = outcomeTest.loc[toilTest.index,:]
 
 
-
+# E. QA test and training sets
+all(outcomeTrain.index == toilTrain.index)
+all(outcomeTest.index == toilTest.index)
+sum(outcomeTrain[0])/len(outcomeTrain.index) # tests even split healthy/tumor
 

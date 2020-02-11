@@ -41,6 +41,7 @@ require(ggplot2);
 require(magrittr);
 require(caTools);
 # install_github("ririzarr/rafalib")
+# install.packages("rsconnect")         # needed for ShinyApps
 # require(rafalib);                     # may not be used
 require(glmnet);
 require(biomaRt);
@@ -52,7 +53,8 @@ require(heatmap3)
 library(RColorBrewer)
 require(gplots)
 require(BBmisc)
-require(topGO)
+require(edgeR)
+# require(topGO)
 ```
 
 #### Hidden Functions
@@ -138,9 +140,11 @@ weightedTrimmedMean <- function(x, trainX=NULL, flag=0){
       # calculate Trimmed Mean scaling factor
       TMM_log2 <- sum(M_norm * weights)/sum(weights)        # some NaN here
       TMM <- 2^TMM_log2
-      
+
       scalingFactors <- c(scalingFactors, TMM)
+      
    }
+   print(scalingFactors)
    return(apply(x[[3]], 2, function(x) x/scalingFactors))
 }
 
@@ -364,7 +368,11 @@ I'm using the TMM algorithm to perform sample-to-sample scaling, just as what is
 ```{r}
 tmp <- pickRefSample(train)
 train$M_scaled <- tmp[[2]]; train$RefSampleName <- tmp[[1]]
-train$M_filtScaled <- weightedTrimmedMean(train)
+train$M_filtScaled <- weightedTrimmedMean(train, NULL, 0)
+
+edgeR_scalingFactors <- edgeR::calcNormFactors(t(train$M_filt),method="TMM") #edgeR method, but need
+# way of feeding it a reference sample
+# apply(train[[3]], 2, function(x) x * edgeR_scalingFactors)
 ```
 ### 3. Gene-level Normalization
 When performing lasso regularization, it's important that the each gene is on the same scale as all other genes.  Otherwise, highly expressed genes will influence the algorithm more than other genes.  And with differential expression, we're not interested in the absolute expression level in any case.  So here, we subtract each gene's mean and divide by the gene's standard deviation so that each gene is standard-normalized.
@@ -519,6 +527,10 @@ PCs <- prcomp(train$M_norm)                               # (data already scaled
 nComp <- 2
 dfComponents <- predict(PCs, newdata=train$M_norm)[,1:nComp]
 
+# capture 'prognosis' and 'dfComponents' as file to be used in Shiny App
+# trainSmpPCsProg <- cbind(dfComponents, prognosis)
+# write.table(trainSmpPCsProg, "BRCAtrainSmplsPCProg", sep=",")
+
 PC_plot <- data.frame(x=dfComponents[,1], y = dfComponents[,2], col=prognosis)
 colors3pal <- c("#FDAE6B", "#E6550D",  "#56B4E9")
 
@@ -544,8 +556,8 @@ In light of the PC plot, it perhaps should not be surprising that an off-the-she
 ### Top 5 Principal Components
 I wanted to see if any other of the top PCs were good at separating healthy samples from tumors.  
 ```{r, fig.height=10, fig.width=10, dpi=300}
-plotPCs_1d <- function(dfComponents){
-   PC_plot <- data.frame(x=dfComponents$Var2, y = dfComponents$value, col=prognosis)
+plotPCs_1d <- function(dfComponents, color){
+   PC_plot <- data.frame(x=dfComponents$Var2, y = dfComponents$value, col=color)
    colors3pal <- c("#FDAE6B", "#E6550D",  "#56B4E9")
    obj <- ggplot(PC_plot) + 
       geom_jitter(aes(x=x, y=y, color=as.factor(col)), alpha=0.7) + 
@@ -564,7 +576,7 @@ nComp <- 5
 dfComponents <- predict(PCs, newdata=train$M_norm)[,1:nComp]
 
 dfCompMelt <- melt(dfComponents)
-plotPCs_1d(dfCompMelt)
+plotPCs_1d(dfCompMelt, prognosis)
 ```
 We see that the 2nd and 3rd PCs give pretty good outcome variable separation.  Let's look at pairwise PC plots.
 ```{r, fig.height=14, fig.width=12, dpi=300}
@@ -710,8 +722,6 @@ In the dataset we'll now look at, I'm not performing any filtering step.
 The code is a bit extensive, partly because it hasn't been cleaned up with common functions.  It's not shown in the .html nor .md versions of this file.  It can be seen in the .Rmd version. 
 
 ```{r, include=FALSE}
-
-
 wangMatrix <- read.table(WANG_MATRIX, header=TRUE)       # rownames okay now
 wangSelectedSamples <- colnames(wangMatrix)
 wangTCGAsamples <- wangSelectedSamples[grep("^TCGA", wangSelectedSamples)] %>%
@@ -1176,7 +1186,7 @@ LogRegModel <- storeMODEL(coefsToil, train=train4stage)
 ```
 The chosen model has only 8 predictors, all with small coefficients (< 0.1).
 
-#### test the test set
+#### Prepare the test set
 ```{r}
 test4stage$M_nat <- natural(test4stage)
 
@@ -1190,7 +1200,7 @@ test4stage$M_filtScaled <- weightedTrimmedMean(test4stage, train4stage, 1) # fil
 
 test4stage$M_norm <- normalizeGenes(test4stage$M_filtScaled, TRUE, FALSE)
 ```
-#### Remove Non-Predictor Genes from Filtered Test Data
+#### Remove Non-Predictor Genes from Filtered Test Data and Calculate Accuracy
 We're just keeping the 8 predictors 
 ```{r}
 colIDs <- which(colnames(test4stage$M_norm) %in% 
@@ -1202,19 +1212,22 @@ test4stagePred <- cbind(rep(1,nrow(test4stagePred)), test4stagePred)
 test4stagePredictions <- ifelse(test4stagePred %*% LogRegModel$predCoefs > 0, 1, 0)
 table(test4stage$outcome, test4stagePredictions)
 ```
-These results show that I have absolutely no sensitivity nor specificity.
+These results show that I have absolutely no sensitivity nor specificity.  The accuracy is 55%.
 
 ## Support Vector Machine
 Given how the data are on top of each other in the PC plot, I'm going to see if SVM can tease apart the data a bit.
 
-```{r}
+```{r, dpi=300}
 require(e1071)
-svmfit <- svm(factor(train4stage$outcome) ~., data=train4stage$M_norm, 
-              kernel="radial", cost=5, scale=F)
+#svmfit <- svm(factor(train4stage$outcome) ~., data=train4stage$M_norm, 
+#              kernel="radial", cost=5, scale=F)
+
+# STACK OVERFLOW
+
 # this is getting a stack overflow.  So I'll just remove some predictors and see
 # if it'll complete
 # Let's calculate the first 10 PCs across each sample and see if we can run svm on it.
-pcDat <- data.frame(cbind(PCs$x[,1:10], outcome=as.factor(train4stage$outcome)))
+pcDat <- data.frame(cbind(PCs$x[,1:10], outcome=train4stage$outcome))
 svmfit <- svm(outcome ~., data=pcDat, kernel="radial", cost=5, scale=F, 
               probability=T, type='C-classification')
 
@@ -1224,7 +1237,7 @@ testPred <- predict(svmfit, testSetPCs,decision.values = T)    # getting 1.5 eve
 
 
 # let's even look at training data accuracy:
-trainPred <- ifelse(predict(svmfit, pcDat %>% dplyr::select(-outcome)) < 1.5, 1, 2) # only works with outcome var!
+trainPred <- ifelse(predict(svmfit, pcDat %>% dplyr::select(-outcome)) < 0.5, 0, 1) # only works with outcome var!
 table(train4stage$outcome, trainPred)              # 100% not believable.  plus the outcome var still there.
 
 # probably should do something to select cost parameters.  See ISLR book
@@ -1233,6 +1246,56 @@ tune.out <- tune(svm, outcome ~., data=pcDat, kernel="radial",
 summary(tune.out)
 bestModel <- tune.out$best.model
 summary(bestModel)
+ypred <- ifelse(predict(bestModel, testSetPCs) < 1.5, 1, 2)
+table(test4stage$outcome, ypred)
+```
+(22+18)/(22+18+15+19)
+I'm getting terrible results.
+
+#### try training set again with bestModel
+```{r}
+yTrainPred <- ifelse(predict(bestModel, pcDat %>% dplyr::select(-outcome)) < 1.5, 0, 1)
+table(train4stage$outcome, yTrainPred)
+```
+77% training set accuracy compared with 54% test set accuracy.  So I'm over-fitting a bit.
+
+#### I'm still really surprised that I didn't do a lot better with just PC2 and PC5.
+#### Let's try again.
+```{r}
+#pcDat2_5 <- data.frame(cbind(PCs$x[,c(2,5)], outcome=as.factor(train4stage$outcome)))
+#pcDat2_5 <- data.frame(cbind(PCs$x[,c(2,5)], outcome=train4stage$outcome))
+x1 <- pcDat[,2]
+x2 <- pcDat[,5]
+out <- pcDat[,11]
+pcDat2_5 <- data.frame(cbind(x1, x2, out))
+#names(pcDat2_5) <- c("X1", "X2", "outcome")
+tune25.out <- tune(svm, out ~ ., data=pcDat2_5, kernel="radial",
+                   ranges=list(cost=c(0.001,0.01,0.1,1,5,10,100)))
+#summary(tune25.out)
+#str(tune25.out)
+bestModel2_5 <- tune.out$best.model 
+
+# let's graph that model
+make.grid=function(x,n=75){
+  grange=apply(x,2,range)
+  x1=seq(from=grange[1,1],to=grange[2,1],length=n)
+  x2=seq(from=grange[1,2],to=grange[2,2],length=n)
+  expand.grid(X1=x1,X2=x2)
+}
+xgrid <- make.grid(pcDat2_5[,1:2])
+ygrid <- predict(bestModel2_5, xgrid)      # BUG
+
+
+# let's predict on training data
+yTrainPred2_5 <- ifelse(predict(bestModel2_5, pcDat2_5 %>% dplyr::select(-outcome)) < 1.5, 0, 1)
+
+# let's predict on test data
+testSetPCs <- predict(PCs, newdata=test4stage$M_norm)[,c(2,5)]
+names(testSetPCs) <- c("X1", "X2")
+ifelse(predict(bestModel2_5, testSetPCs) < 1.5, 0, 1)
+# I could try a stronger filter across dataset then let all remaining genes act as predictors
+# ridge regression
+
 #plot(svmfit, pcDat)
 # x <- PCs$x[,c(2,5)]
 # x1 <- seq(-300, 200, length.out=100)
@@ -1242,4 +1305,60 @@ summary(bestModel)
 # plot(xgrid, col=as.numeric(ygrid),pch=20,cex=.2) +
 #    points(x, col=pcDat$outcome, pch=19)
 # plot(pcDat$PC2, pcDat$PC5, col=pcDat$outcome)
+```
+
+```{r, dpi=300}
+plotPCs_1d_4 <- function(dfComponents, color){
+   PC_plot <- data.frame(x=dfComponents$Var2, y = dfComponents$value, col=color)
+   colors4pal <- c(rev(viridis::viridis(5)[2:5]))
+   obj <- ggplot(PC_plot) + 
+      geom_jitter(aes(x=x, y=y, color=as.factor(col)), alpha=0.5, size=0.2) + 
+      ggtitle("Separation of Different Stage Tumors by First Few PC's") +
+      xlab("PC Number") + ylab("PC Projection") +
+      theme_bw() +
+      scale_color_manual(name="Category",
+                         breaks = c("1", "2", "3", "4"),
+                         values = c(colors4pal[1], colors4pal[2], colors4pal[3],
+                                    colors4pal[4]),
+                         labels = c("Stage I", "Stage II", "Stage III",
+                                    "Stage IV"));
+   return(obj)
+}
+nComp <- 10
+dfComponents <- predict(PCs, newdata=train4stage$M_norm)[,1:nComp]
+
+dfCompMelt <- melt(dfComponents)
+plotPCs_1d_4(dfCompMelt, progn4stage)
+```
+#### Ridge Regression Trial
+```{r, fig.height=12, fig.width=12, dpi=300}
+set.seed(SEED2)
+fit4stage.ridge <- glmnet(train4stage$M_norm, train4stage$outcome, family="binomial",
+                           alpha = 0)                   # alpha = 0 for ridge
+plot(fit4stage.ridge, xvar="lambda", label=TRUE)
+```
+#### Ridge Regression Cross-Validation
+```{r, fig.height=8, fig.width=8, dpi=300}
+set.seed(SEED2)                                # need same seed as previous step
+cv.4stage.ridge <- cv.glmnet(train4stage$M_norm, train4stage$outcome
+                           , family="binomial", alpha=0) 
+plot(cv.4stage.ridge)
+```
+#### Picking best Ridge Model and Determining Test Set Accuracy
+```{r}
+coefs4stage <- coef(cv.4stage.ridge, s=cv.4stage.ridge$lambda.1se)
+test4stageM <- cbind(rep(1,nrow(test4stage$M_norm)), test4stage$M_norm)
+test4stagePred <- ifelse((test4stageM %*% coefs4stage) < 0, 0, 1)
+table(test4stage$outcome, test4stagePred)
+```
+This gives us a test set accuracy of (23+20)/74 = 58%.  Better, but not great.
+
+#### Do samples cluster together?
+I'm going to look at k-means clustering and hierarchical clustering
+```{r, dpi=300}
+require(ape)
+train4stageDist <- dist(train4stage$M_norm)
+hclust.avg <- hclust(train4stageDist, method="average")
+plot(hclust.avg, cex=0.2, col=progn4stage)
+plot(as.phylo(hclust.avg), type="unrooted", cex=0.2, no.margin=T)
 ```
