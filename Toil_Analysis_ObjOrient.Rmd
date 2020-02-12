@@ -52,7 +52,7 @@ require(heatmap3)
 library(RColorBrewer)
 require(gplots)
 require(BBmisc)
-require(topGO)
+# require(topGO)
 ```
 
 #### Hidden Functions
@@ -348,6 +348,41 @@ train <- createDAT(toilTrain)
 train$M_nat <- natural(train)
 train$outcome <- outcomeTrain
 ```
+### 1a. Histogram of depth of sequencing
+The cutoffs used in the past has always been confounded by the fact that there's various depth-of-sequencing effects.
+```{r}
+DOS = apply(train$M_nat, 1, sum)
+hist(DOS, main="Histogram of Toil Samples' Depth-of-Sequencing",
+     xlab="DOS, natural scale", ylab="Number of Training Samples")
+```
+### 1b. Histogram of Sample's 75th Quantile
+```{r}
+quant75 = apply(train$M_nat, 1, function(x) quantile(x)[4])
+hist(quant75, main="Histogram of Toil Samples' 75th Quantile",
+     xlab="DOS, natural scale", ylab="Number of Training Samples")
+```
+### 1c. Plotting DOS vs 75th quantile
+```{r}
+ggplot(data_frame(cbind(DOS, quant75)), aes(x=DOS, y=quant75))+
+   geom_point()
+```
+We see that there's a lot of bias between samples, as the 75th quantile doesn't correlate very well to the Depth-of-Sequencing.
+```{r}
+lowest = cbind(train$M_orig['TCGA.GI.A2C8.11',], rep("lowest", nrow(train$M_norm)))
+highest = cbind(train$M_orig['TCGA.BH.A1EW.11',], rep("highest", nrow(train$M_norm)))
+dfHist = data.frame(rbind(lowest, highest), stringsAsFactors = F)
+colnames(dfHist) <- c("x", "y")
+dfHist$x <- as.numeric(dfHist$x)
+ggplot(dfHist, aes(x=x)) +
+   geom_density(aes(fill=y), alpha=0.5) + 
+   ggtitle("Distribution of Lowest and Highest DOS Samples") +
+   xlab("log2(Estimated_Counts")
+
+```
+### What happens with cutoff = 0.2 and 5, and then the 75th-remaining quantile?
+
+
+
 ### 1. Removing genes whose expression is very close to zero.  
 We know that there are about 9103 genes that are never expressed (data not shown), but there are over 25000 genes whose 75th quantile-level expression is under 2^(0.2) - 1 = 0.14 counts. We really don't want to deal with those genes in selecting a reference sample, etc.
 ```{r, fig.height=8, fig.width=8, dpi=300}
