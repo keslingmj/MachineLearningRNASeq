@@ -368,7 +368,7 @@ I'm using the TMM algorithm to perform sample-to-sample scaling, just as what is
 ```{r}
 tmp <- pickRefSample(train)
 train$M_scaled <- tmp[[2]]; train$RefSampleName <- tmp[[1]]
-train$M_filtScaled <- weightedTrimmedMean(train, NULL, 0)
+train$M_filtScaled <- weightedTrimmedMean(train, NULL, 0)    ## re-modify
 
 edgeR_scalingFactors <- edgeR::calcNormFactors(t(train$M_filt),method="TMM") #edgeR method, but need
 # way of feeding it a reference sample
@@ -524,12 +524,12 @@ plotPCs <- function(dfComponents, compIdx){
 
 prognosis <- c(rep(1, 59), rep(2,80), rep(3, 148))       # 1/2 = healthy, 3 = cancer
 PCs <- prcomp(train$M_norm)                               # (data already scaled)
-nComp <- 2
+nComp <- 2           
 dfComponents <- predict(PCs, newdata=train$M_norm)[,1:nComp]
 
 # capture 'prognosis' and 'dfComponents' as file to be used in Shiny App
 # trainSmpPCsProg <- cbind(dfComponents, prognosis)
-# write.table(trainSmpPCsProg, "BRCAtrainSmplsPCProg", sep=",")
+# write.table(trainSmpPCsProg, "BRCAtrainSmplsPCProg.txt", sep=",")
 
 PC_plot <- data.frame(x=dfComponents[,1], y = dfComponents[,2], col=prognosis)
 colors3pal <- c("#FDAE6B", "#E6550D",  "#56B4E9")
