@@ -109,7 +109,7 @@ class RSeqDF(pd.DataFrame):
 class DF_Set:
     def __init__(self, name, data=None, index=None, columns=None,
                  dtype=None, copy=False):
-        objNames = "orig filt zeroGenes nat scaled norm outcome refSmpName \
+        objNames = "orig nat filt zeroGenes scaled norm outcome refSmpName \
         refSmp refSmpUnscaled filtScaled".split()
         self._dfs = [RSeqDF('orig', data=data, index=index, \
                  columns=columns, dtype=None, copy=copy)]
@@ -118,18 +118,34 @@ class DF_Set:
     def __getitem__(self, name):                    # looks up DF based on name
         return self._dfs[self.nameIdx[name]]             # name -> posn in list
     
-    def filterGenes(self, cutoff=0.2):                     # assumes log2 scale
-        ZeroExpGenes = list(compress(self._dfs[0], \
-                                     self._dfs[0].quantile(.75, axis=0) < cutoff))
-        orig = copy.copy(self._dfs[0])
-        self.filt = orig.drop(ZeroExpGenes, axis=1, inplace=False)
-        
-        self._dfs.append(self.filt)
-        self._dfs.append(ZeroExpGenes)
-        #return self.filt
-    
     def natScale(self):                         # full orig df on natural scale
         self._dfs.append(np.exp2(self._dfs[0]) - 1)
+    
+    def filterGenes(self, cutoff=0.2): 
+        # filtering cutoff calc using log2 scale, but applied to data in the 
+        # natural scale.
+        ZeroExpGenes = list(compress(self._dfs[0], \
+                                     self._dfs[0].quantile(.75, axis=0) < cutoff))
+        nat = copy.copy(self._dfs[1])
+        self.filt = nat.drop(ZeroExpGenes, axis=1, inplace=False)
+        
+        self._dfs.append(self.filt)
+        self._dfs.append(ZeroExpGenes)   # fil
+        #return self.filt
+    
+
+        
+    def edgeRscaling(self):
+        importr('edgeR')
+        from rpy2.robjects import r, pandas2ri
+        pandas2ri.activate()           # needed to tf pandas to R-compat format
+        calcFactors = r('edgeR::calcNormFactors')       # convert to python obj
+        # we're scaling the filtered data, which is log2(data)
+        scalingFacts = calcFactors((self._dfs[2].T),method='TMM')
+        # identify which is reference sample:
+        close2one = (SF > 0.9999) & (SF < 1.0001)  # not generic code
+        refIdx = [i for i, x in enumerate(close2one) if x]
+        return scalingFacts   # need to store this somewhere?
         
         
         
@@ -156,7 +172,6 @@ toilSubset = processColReorder(toilSubset)
 toilSubsetWide = toilSubset.T
 
 # B. create outcome variable and give it a common index (sample name)
-
 # add method for automatically determining #healthy and #tumor
 
 outcome = pd.DataFrame(pd.concat([pd.Series(np.zeros(185)), pd.Series(np.ones(197))],
@@ -182,13 +197,20 @@ all(outcomeTrain.index == toilTrain.index)
 all(outcomeTest.index == toilTest.index)
 sum(outcomeTrain[0])/len(outcomeTrain.index) # tests even split healthy/tumor
 
-# 4. Create Data Object
+# 4. Create Data Object, then filter, create nat-scale, calc scaling factors,
+trainObj = DF_Set('orig', data=toilTrain, index=toilTrain.index, \
+                  columns=toilTrain.columns)
+trainObj.natScale()
+trainObj.filterGenes()
+
+
+
 # FIRST, GET TO WORK.  THEN CHECK ACCURACY, THEN, WILL WRITE UP PROPERLY
-train_orig = RSeqDF('orig', data=toilTrain, index=toilTrain.index, columns=toilTrain.columns)
-train_norm = train_orig.transform(lambda x: 2**x - 1)
-geneQuantiles = train_orig.quantile(q=0.75, axis='rows') # counter-intuitive
-ZeroGenes = geneQuantiles < 0.2
-train_filt = train_orig.loc[:, -ZeroGenes]
+#train_orig = RSeqDF('orig', data=toilTrain, index=toilTrain.index, columns=toilTrain.columns)
+#train_norm = train_orig.transform(lambda x: 2**x - 1)
+#geneQuantiles = train_orig.quantile(q=0.75, axis='rows') # counter-intuitive
+#ZeroGenes = geneQuantiles < 0.2
+#train_filt = train_orig.loc[:, -ZeroGenes]
 #edgeR_scalingFactors = edgeR::calcNormFactors(t(train$M_filt),method="TMM")
 
 
