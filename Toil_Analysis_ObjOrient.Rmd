@@ -89,13 +89,16 @@ weightedTrimmedMean <- function(x, trainX=NULL, flag=0){
       testSample <- x$M_scaled[testIdx,]
       testSmpUnscaled <- x$M_filt[testIdx,] 
       
-      refZeros <- which(refSample==0)
-      smpZeros <- which(testSample==0)
-      
-      unionZeros <- sort(unique(append(refZeros, smpZeros)))
-      refSampleFilt <- refSample[-unionZeros]
-      testSampleFilt <- testSample[-unionZeros]
+      # refZeros <- which(refSample==0) #############
+      # smpZeros <- which(testSample==0)
+      # 
+      # unionZeros <- sort(unique(append(refZeros, smpZeros)))
+      # refSampleFilt <- refSample[-unionZeros]
+      # testSampleFilt <- testSample[-unionZeros] ############
 
+      refSampleFilt = refSample
+      testSampleFilt = testSample
+      
       # calculate M and A only for filtered genes
       refLog <- log2(refSampleFilt)
       smpLog <- log2(testSampleFilt)
@@ -261,7 +264,8 @@ pickRefSample.DAT <- function(x, logged=FALSE){  # X is matrix with samples as r
    N <- apply(x$M_filt, 1, sum)
    scaledX <- apply(x$M_filt, 2, function(x) x / N)
    thirdQuartiles <- apply(scaledX, 1, function(x) quantile(x)[4])
-   med <- median(thirdQuartiles)
+   #med <- median(thirdQuartiles)      ############
+   med <- mean(thirdQuartiles)
    refSampleName <- names(sort(abs(thirdQuartiles - med))[1])
    return(list(refSampleName, scaledX))
 }
@@ -701,7 +705,7 @@ colnames(LogRegModel$modelDF)[31] <- "LINC02580"
 
 geneCoefsMatrixOrder <- geneCoefs[colnames(LogRegModel$modelDF),]    #reordering
 range01 <- function(x)(x-min(x))/diff(range(x))
-geneCols <- palette(brewer.pal(11, "Spectral"))[cut(range01(geneCoefsMatrixOrder), breaks=11, labels=FALSE)]
+geneCols <- palette(brewer.pal(11,"Spectral"))[cut(range01(geneCoefsMatrixOrder), breaks=11, labels=FALSE)]
 
 hmcol <- colorRampPalette(c("#40004B", "#40004B", "#40004B", "#762A83", "#9970AB", 
   "#F7F7F7", "#5AAE61", "#1B7837", "#00441B", "#00441B", "#00441B"))

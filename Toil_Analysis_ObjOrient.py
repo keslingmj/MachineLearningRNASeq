@@ -109,8 +109,8 @@ class RSeqDF(pd.DataFrame):
 class DF_Set:
     def __init__(self, name, data=None, index=None, columns=None,
                  dtype=None, copy=False):
-        objNames = "orig nat filt zeroGenes scaled norm outcome refSmpName \
-        refSmp refSmpUnscaled filtScaled".split()
+        objNames = "orig nat filt zeroGenes scaled refSmpName \
+        refSmp norm outcome filtScaled  refSmpUnscaled".split()
         self._dfs = [RSeqDF('orig', data=data, index=index, \
                  columns=columns, dtype=None, copy=copy)]
         self.nameIdx = dict(zip(objNames, range(11)))
@@ -135,17 +135,31 @@ class DF_Set:
     
 
         
-    def edgeRscaling(self):
+    def edgeRscaling(self):      # want RefSample rep as fraction total counts
+        # need to add routine for when RefSample is provided
         importr('edgeR')
+        import operator
         from rpy2.robjects import r, pandas2ri
         pandas2ri.activate()           # needed to tf pandas to R-compat format
         calcFactors = r('edgeR::calcNormFactors')       # convert to python obj
         # we're scaling the filtered data, which is log2(data)
-        scalingFacts = calcFactors((self._dfs[2].T),method='TMM')
-        # identify which is reference sample:
-        close2one = (SF > 0.9999) & (SF < 1.0001)  # not generic code
-        refIdx = [i for i, x in enumerate(close2one) if x]
-        return scalingFacts   # need to store this somewhere?
+        scalingFacts = calcFactors((self._dfs[2].T),method='TMM') #want names associated
+        try:
+            (sum(scalingFacts)/len(scalingFacts) < 1.02) & \
+            (sum(scalingFacts)/len(scalingFacts) > 0.98)
+        except:
+            raise Exception("Scaling Factor Calculation failed.")
+        # We MULTIPLY these factors against the various samples
+        
+        min_index, min_value = min(enumerate(abs(scalingFacts -1)), \
+                                   key=operator.itemgetter(1))
+        refName = self._dfs[2].index[min_index]
+        refDataPreProc = self._dfs[2].loc[refName]
+        refData = refDataPreProc/sum(refDataPreProc)
+        self._dfs.append(self._dfs[2].T.multiply(scalingFacts).T)
+        self._dfs.append(refName)
+        self._dfs.append(refData)   # STILL MISSING UNSCALED REF SAMPLE
+        #return scalingFacts   # need to store this somewhere?
         
         
         
