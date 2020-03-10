@@ -34,11 +34,15 @@ import matplotlib as plt
 import random
 import rpy2.robjects as robjects
 from sklearn.model_selection import train_test_split
+from sklearn.model_selection import cross_val_score
+from sklearn.model_selection import GridSearchCV
+from sklearn.linear_model import LogisticRegression
 from rpy2.robjects.packages import importr
 from itertools import compress
 import copy
 
-
+from sklearn.linear_model import Lasso  # will give use log-odds
+# https://towardsdatascience.com/how-to-perform-lasso-and-ridge-regression-in-python-3b3b75541ad8
 
 
 # NEEDED FUNCTIONS:
@@ -150,7 +154,7 @@ class DF_Set:
         except:
             raise Exception("Scaling Factor Calculation failed.")
         # We MULTIPLY these factors against the various samples
-        
+        # find reference by value closest to 1:
         min_index, min_value = min(enumerate(abs(scalingFacts -1)), \
                                    key=operator.itemgetter(1))
         refName = self._dfs[2].index[min_index]
@@ -158,13 +162,26 @@ class DF_Set:
         refData = refDataPreProc/sum(refDataPreProc)
         self._dfs.append(self._dfs[2].T.multiply(scalingFacts).T)
         self._dfs.append(refName)
-        self._dfs.append(refData)   # STILL MISSING UNSCALED REF SAMPLE
-        #return scalingFacts   # need to store this somewhere?
-        
+        self._dfs.append(refData)   
+        # STILL MISSING UNSCALED REF SAMPLE It's derived from filt -- will
+        # deal with this LATER
+    
+    def normalize(self):    
+        from sklearn.preprocessing import scale
+        self.normDF = pd.DataFrame(scale(self._dfs[4], axis=0, with_mean=True, \
+                           with_std=True, copy=True),
+            columns=self._dfs[4].columns,
+            index=self._dfs[4].index)  
+        self._dfs.append(self.normDF)
+        # axis for 'shape' must be 0 even though those are the columns!
+        # THIS DID NOT HELP!
         
         
     #def name2Idx(self, name):
     #    return self.nameIdx[name]
+
+def mean(numbers):        # write for cols and rows?
+    return float(sum(numbers)) / max(len(numbers), 1)
 
 
 ##########
@@ -216,6 +233,12 @@ trainObj = DF_Set('orig', data=toilTrain, index=toilTrain.index, \
                   columns=toilTrain.columns)
 trainObj.natScale()
 trainObj.filterGenes()
+trainObj.edgeRscaling()
+trainObj.normalize()
+# QA normalization
+all((trainObj['norm'].mean(axis=0) > -0.0001) & (trainObj['norm'].mean(axis=0) < 0.0001))
+all((trainObj['norm'].std(axis=0) > 0.99) & (trainObj['norm'].mean(axis=0) < 1.01))
+
 
 
 
