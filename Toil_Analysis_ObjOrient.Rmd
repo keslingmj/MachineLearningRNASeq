@@ -382,6 +382,7 @@ INSERT EQUATION HERE
 set.seed(SEED2)
 fitToil.lasso <- glmnet(train$M_norm, train$outcome, family="binomial",
                            alpha = 1)
+defaultPalette <- palette()
 plot(fitToil.lasso, xvar="lambda", label=TRUE)
 
 ```
@@ -654,21 +655,47 @@ df03 <- LogRegModel$modelDF[,c("PAFAH1B3", "MIR497HG")]    # BGN
 df03 <- data.frame(cbind(df03, col=as.factor(prognosis)))
 ggplot(df03) +
    geom_point(aes(x=PAFAH1B3,y=MIR497HG,colour=as.factor(col))) +
-   theme_bw() +
+   theme_bw() + theme(plot.title = element_text(hjust=0.5)) +
     #ylim(-2,5) + #theme_bw() + # (axis.text.x=element_text(angle=90)) +
    scale_color_manual(name="Category",
                          breaks = c("1", "2", "3"),
                          values = c(colors3pal[1], colors3pal[2], colors3pal[3]),
-                         labels = c("Healthy-GTEX", "Healthy-TCGA", "Cancer-TCGA"))
+                         labels = c("Healthy-GTEX", "Healthy-TCGA", "Cancer-TCGA")) +
+  ggtitle("Training Sample Separation Using Only 2 Genes")
 ```
+### Using the same 2 genes to separate out healthy and tumor samples in Test Set
+We'll repeat the above figure, but for Test data only
+```{r, fig.height=8, fig.width=8, dpi=300}
+# start by taking test set data across 42 predictors and removing Entrez part of name
+# from column names
+colnames(toilTestFiltScal42) <- gsub("\\.ENSG.*$","",colnames(toilTestFiltScal42))
+
+paste0("PAFAH1B3.", LogRegModel$predEntrezID[which(LogRegModel$predGeneNames == "PAFAH1B3")])
+df04 <- toilTestFiltScal42[,c("PAFAH1B3", "MIR497HG")]
+#df03 <- LogRegModel$modelDF[,c("PAFAH1B3", "MIR497HG")]    # BGN
+# need prognosis for test set
+prognosisTest <- c(rep(1, 17), rep(2,29), rep(3, 49))
+df04 <- data.frame(cbind(df04, col=as.factor(prognosisTest)))
+ggplot(df04) +
+   geom_point(aes(x=PAFAH1B3,y=MIR497HG,colour=as.factor(col))) +
+   theme_bw() + theme(plot.title = element_text(hjust=0.5)) +
+    #ylim(-2,5) + #theme_bw() + # (axis.text.x=element_text(angle=90)) +
+   scale_color_manual(name="Category",
+                         breaks = c("1", "2", "3"),
+                         values = c(colors3pal[1], colors3pal[2], colors3pal[3]),
+                         labels = c("Healthy-GTEX", "Healthy-TCGA", "Cancer-TCGA")) +
+  ggtitle("Test Sample Separation Using Only 2 Genes")
+```
+
+
 We can see that 2 genes with coefficients that are large, but of opposite sign, nearly create a separating hyperplane between the tumors and the healthy samples.  This recapitulates the earlier idea of how the gene expression programming of tumors have greatly diverged from that of healthy samples that we saw with the Principal Components plots.
 
 ### Heatmap of Predictors Across Samples
 ```{r, fig.height=12, fig.width=10}
 
-# coloring samples by prognosis:
-samples <- factor(prognosis)
-sampleCols <- palette(colors3pal)[samples]
+# create color range for expression values:
+hmcol <- colorRampPalette(c("#40004B", "#40004B", "#40004B", "#762A83", "#9970AB", 
+  "#F7F7F7", "#5AAE61", "#1B7837", "#00441B", "#00441B", "#00441B"))
 
 # coloring genes by value of model coefficient:
 geneCoefs <- data.frame(LogRegModel$predCoefs)
@@ -678,11 +705,12 @@ geneCoefs <- geneCoefs[rownames(geneCoefs) != "(Intercept)",] # vector now
 
 # create color range for model coefficients:
 range01 <- function(x)(x-min(x))/diff(range(x))
-geneCols <- palette(brewer.pal(11,                  "Spectral"))[cut(range01(geneCoefs), breaks=11, labels=FALSE)]
+geneCols <- palette(brewer.pal(11,"Spectral"))[cut(range01(geneCoefs), 
+                                                   breaks=11, labels=FALSE)]
 
-# create color range for expression values:
-hmcol <- colorRampPalette(c("#40004B", "#40004B", "#40004B", "#762A83", "#9970AB", 
-  "#F7F7F7", "#5AAE61", "#1B7837", "#00441B", "#00441B", "#00441B"))
+# coloring samples by prognosis:
+samples <- factor(prognosis)
+sampleCols <- palette(colors3pal)[samples]
 
 # plot heatmap
 heatmap.2(as.matrix(LogRegModel$modelDF), 
@@ -692,6 +720,7 @@ heatmap.2(as.matrix(LogRegModel$modelDF),
           ColSideColors = geneCols, 
           RowSideColors = sampleCols, 
           main = "Heatmap of Gene Predictors vs Samples")
+undebug(heatmap.2)
 ```
 The heatmap just provides another way at looking at the closeness of relationship between the different gene predictors and likewise between the different samples.  The color-coding of the columns and rows has a bug in it at the moment.  
 
@@ -1023,3 +1052,57 @@ stage4Preds <- filterScaleNormalizePredict(stageFour, REF_MEANS, REF_SDS,
 table(stageFourOutcome, stage4Preds)
 ```
 We see that our results are greatly improved!  The sensitivity is not proportional nor inversely proportional to the stage of the disease.  Overall, we have a sensitivity of 99.1%!
+
+## Searching for Redundant Predictors in Training Set
+Although our model with 42 gene predictors behaved very well, there are presumably many other predictors that could have sufficed as well.  Here, we subtract the 42 predictors out of the training set, and retrain the model
+```{r,  fig.height=12, fig.width=12, dpi=300}
+# start by grabbing normalized training matrix:
+trainM <- train$M_norm
+#colnames(trainM) <- gsub("\\.ENSG.*", "", colnames(trainM))
+#length(unique(colnames(trainM)))   # NOT unique!
+
+# next, remove the 42 predictors from this matrix:
+colIDs <- which(colnames(trainM) %in% 
+                   LogRegModel$predFullNames[2:length(LogRegModel$predFullNames)])
+trainM_no42 <- trainM[,-colIDs]                    # SEPARATE FROM OBJECT
+
+mypal <- defaultPalette
+
+# train Lasso Model
+set.seed(SEED2)
+fitToil.lasso2 <- glmnet(trainM_no42, train$outcome, family="binomial",
+                           alpha = 1)
+plot(fitToil.lasso2, xvar="lambda", label=TRUE, col=mypal)
+```
+```{r, fig.height=8, fig.width=8, dpi=300}
+set.seed(SEED2)                                # need same seed as previous step
+cv.Toil.lasso2 <- cv.glmnet(trainM_no42, train$outcome
+                           , family="binomial", alpha=1) 
+plot(cv.Toil.lasso2)
+```
+
+The Lasso Coefficient plots suggest that a lot of the same predictor value of the data are still in the dataset after removing the original 42 predictors.  This time, it takes 56 predictors to be within 1 standard deviation of the minimum binomial deviance.
+
+#### Grabbing Test Set Data to Measure Accuracy of 2nd pass model
+Let's take a look at the test set accuracy:
+```{r}
+# start by capturing model2 information:
+coefsToil2 <- coef(cv.Toil.lasso2, s=cv.Toil.lasso$lambda.1se)
+LogRegModel2 <- storeMODEL(coefsToil2, train)
+
+colIDs <- which(colnames(test$M_norm) %in% 
+                   LogRegModel2$predFullNames[2:length(LogRegModel2$predFullNames)])
+toilTestFiltScal56 <- test$M_norm[,colIDs]                    # SEPARATE FROM OBJECT
+```
+#### 2nd Pass Model Test Set Sensitivity and Specificity
+First we add an intercept column to test predictor variables, then we perform
+matrix multiplication with the predictor coefficients and then look at the 
+prediction performance in the confusion matrix.
+```{r}
+toilTestFiltScal56 <- cbind(rep(1,nrow(toilTestFiltScal56)), toilTestFiltScal56)
+
+testPredictions_toil <- ifelse(toilTestFiltScal56 %*% LogRegModel2$predCoefs > 0, 1, 0)
+table(test$outcome, testPredictions_toil)
+```
+
+We see that the 2nd model performs just as well as the first model.
