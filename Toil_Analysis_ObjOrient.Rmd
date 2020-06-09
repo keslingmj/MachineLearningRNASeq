@@ -1106,3 +1106,49 @@ table(test$outcome, testPredictions_toil)
 ```
 
 We see that the 2nd model performs just as well as the first model.
+#### Predictor Comparison Across Models
+```{r}
+# get predictor gene names and Ensembl IDs while removing Intercept term:
+ensembl_geneID2 <- LogRegModel2$predEntrezID[2:length(LogRegModel2$predEntrezID)]
+predictorGeneName2s <- LogRegModel2$predGeneNames[2:length(LogRegModel2$predGeneNames)]
+modelCoefs2 <- LogRegModel2$predCoefs[2:length(LogRegModel2$predCoefs)]
+ensembl_coefs2 <- data.frame(ensembl_geneID2, modelCoefs2, abs(modelCoefs2)) 
+
+
+
+
+Ensmbl_HGNC_SYM_DESC <- read.csv(BIOMART_GENE_ATTR_FILE, header=TRUE, stringsAsFactors = F)
+predGeneAnnot2 <- Ensmbl_HGNC_SYM_DESC %>% dplyr::filter(ensembl_gene_id %in% ensembl_geneID2) 
+# join with ensembl-coeff df-abs coeff
+rm(Ensmbl_HGNC_SYM_DESC)
+joinedAnnot2 <- inner_join(predGeneAnnot2, ensembl_coefs2, 
+                          by=c("ensembl_gene_id" = "ensembl_geneID2"))
+# arrange by order to desc abs coeff and print select columns:
+joinedAnnot2$description <- gsub(" \\[.*$","",joinedAnnot2$description) # %>% substr(1,40)
+modelAnnot2 <- as_tibble(joinedAnnot2 %>% arrange(desc(abs.modelCoefs2.)) %>% 
+                           dplyr::select("ensembl_gene_id", "hgnc_symbol", "modelCoefs2",
+                                         "description"))
+
+# find and fill in missing information:
+missingIndices <- c(which(modelAnnot2$hgnc_symbol == ""))
+missing <- modelAnnot2$ensembl_gene_id[missingIndices]
+findName <- function(ensembl, LogRegModel2){
+  name <- LogRegModel2$predGeneNames[which(LogRegModel2$predEntrezID == ensembl)]
+  return(name)
+}
+#findName(missing[1], LogRegModel2)
+missingNames <- unlist(lapply(missing, findName, LogRegModel2=LogRegModel2))
+modelAnnot2$hgnc_symbol[missingIndices] <- missingNames
+
+print(modelAnnot2)
+```
+We can see that more gene predictors are selected and that the magnitude of the predictors is a bit lower (largest ones 0.3 vs 0.45)
+
+#### Using Correlation Matrix to Compare Predictors
+
+
+
+
+
+
+
