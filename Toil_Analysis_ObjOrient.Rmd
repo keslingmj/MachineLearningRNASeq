@@ -23,11 +23,11 @@ knitr::opts_chunk$set(echo = TRUE)
 #######################
 # SET GLOBAL PARAMETERS
 #######################
-RSEM_COUNTS_FILE <- "/Users/mjk/Desktop/Tresorit_iOS/projects/RNA-Seq/MachineLearningRNASeq/toilSubsetRSEM382.txt"
-TOILGENEANNOT <- "~/RNA-Seq_2019/TOIL_Data/gencode.v23.annotation.gene.probemap"
-BIOMART_GENE_ATTR_FILE <- "/Users/mjk/Desktop/Tresorit_iOS/projects/RNA-Seq/MachineLearningRNASeq/geneAttr.csv"
-TCGA_ATTR_FILE <- "~/Desktop/Tresorit_iOS/projects/RNA-Seq/data/TCGA_Attributes_full.txt"
-WANG_MATRIX <- "/Users/mjk/Desktop/Tresorit_iOS/projects/RNA-Seq/data/wangBreastFPKM398_Attrib.txt"
+RSEM_COUNTS_FILE <- "/Volumes/MK_Ext/Tresorit_iOS/projects/RNA-Seq/MachineLearningRNASeq/toilSubsetRSEM382.txt"
+TOILGENEANNOT <- "/Volumes/MK_Ext/RNA-Seq_2019/TOIL_Data/gencode.v23.annotation.gene.probemap"
+BIOMART_GENE_ATTR_FILE <- "/Volumes/MK_Ext/Tresorit_iOS/projects/RNA-Seq/MachineLearningRNASeq/geneAttr.csv"
+TCGA_ATTR_FILE <- "/Volumes/MK_Ext/Tresorit_iOS/projects/RNA-Seq/data/TCGA_Attributes_full.txt"
+WANG_MATRIX <- "/Volumes/MK_Ext/Tresorit_iOS/projects/RNA-Seq/data/wangBreastFPKM398_Attrib.txt"
 FULL_TOIL_DATA <- "/Users/mjk/RNA-Seq_2019/TOIL_Data/TcgaTargetGtex_gene_expected_count"
 SEED <- 233992812
 SEED2 <- 1011
@@ -49,7 +49,7 @@ require(reshape2)
 require(grid)
 require(gridExtra)
 require(heatmap3)
-library(RColorBrewer)
+require(RColorBrewer)
 require(gplots)
 require(BBmisc)
 # require(topGO)
@@ -618,7 +618,7 @@ joinedAnnot$description <- gsub(" \\[.*$","",joinedAnnot$description) # %>% subs
 modelAnnot <- as_tibble(joinedAnnot %>% arrange(desc(abs.modelCoefs.)) %>% dplyr::select("ensembl_gene_id", 
                                                           "hgnc_symbol", "modelCoefs",
                                                           "description"))
-modelAnnot$hgnc_symbol[15] <- "RP5.1039K5.17"; modelAnnot$hgnc_symbol[40] <- "CTD"
+modelAnnot$hgnc_symbol[15] <- "RP5.103915.17"; modelAnnot$hgnc_symbol[41] <- "CTD.2231E14.8"
 print(modelAnnot, n=42)
 ```
 Of the 42 predictors, 3 are anti-sense RNAs, 1 pseudogene: (CNTNAP3 pseudogene 2), 1 non-protein coding gene,
@@ -663,38 +663,35 @@ ggplot(df03) +
 ```
 We can see that 2 genes with coefficients that are large, but of opposite sign, nearly create a separating hyperplane between the tumors and the healthy samples.  This recapitulates the earlier idea of how the gene expression programming of tumors have greatly diverged from that of healthy samples that we saw with the Principal Components plots.
 
-### Heatmap
+### Heatmap of Predictors Across Samples
 ```{r, fig.height=12, fig.width=10}
+
+# coloring samples by prognosis:
 samples <- factor(prognosis)
-sampleCols <- palette(colors3pal)[samples]           # set color of sample class
+sampleCols <- palette(colors3pal)[samples]
 
-# for the gene-column to be color-coded by the value of its coefficient,
-# the coefficients must be placed in the same order they appear in in the 
-# LogRegModel$modelDF dataframe.  modelAnnot$modelCoefs are where the coefficients
-# reside initially.
+# coloring genes by value of model coefficient:
+geneCoefs <- data.frame(LogRegModel$predCoefs)
+rownames(geneCoefs) <- LogRegModel$predGeneNames
+colnames(geneCoefs) <- "coefs"
+geneCoefs <- geneCoefs[rownames(geneCoefs) != "(Intercept)",] # vector now
 
-geneCoefs <- data.frame(modelAnnot$modelCoefs)
-rownames(geneCoefs) <- modelAnnot$hgnc_symbol
-
-# QA: columns not matching
-# colnames(LogRegModel$modelDF)[!(colnames(LogRegModel$modelDF) %in% modelAnnot$hgnc_symbol)]
-# modelAnnot$hgnc_symbol[!(modelAnnot$hgnc_symbol %in% colnames(LogRegModel$modelDF))]
-
-# manually cleaning these up -- later the gene names should be derived from a common source
-colnames(LogRegModel$modelDF)[2] <- gsub("\\.", "-", colnames(LogRegModel$modelDF)[2])
-colnames(LogRegModel$modelDF)[11] <- gsub("\\.", "-", colnames(LogRegModel$modelDF)[11])
-colnames(LogRegModel$modelDF)[13] <- "CTD"
-colnames(LogRegModel$modelDF)[17] <- "CAVIN2"
-colnames(LogRegModel$modelDF)[31] <- "LINC02580"
-
-geneCoefsMatrixOrder <- geneCoefs[colnames(LogRegModel$modelDF),]    #reordering
+# create color range for model coefficients:
 range01 <- function(x)(x-min(x))/diff(range(x))
-geneCols <- palette(brewer.pal(11, "Spectral"))[cut(range01(geneCoefsMatrixOrder), breaks=11, labels=FALSE)]
+geneCols <- palette(brewer.pal(11,                  "Spectral"))[cut(range01(geneCoefs), breaks=11, labels=FALSE)]
 
+# create color range for expression values:
 hmcol <- colorRampPalette(c("#40004B", "#40004B", "#40004B", "#762A83", "#9970AB", 
   "#F7F7F7", "#5AAE61", "#1B7837", "#00441B", "#00441B", "#00441B"))
-heatmap.2(as.matrix(LogRegModel$modelDF), col=hmcol, trace="none", cexRow = 0.15, cexCol = 0.5,  
-          ColSideColors = geneCols, RowSideColors = sampleCols, main = "Heatmap of Gene Predictors vs Samples")
+
+# plot heatmap
+heatmap.2(as.matrix(LogRegModel$modelDF), 
+          col=hmcol, trace="none", 
+          cexRow = 0.15, 
+          cexCol = 0.5,  
+          ColSideColors = geneCols, 
+          RowSideColors = sampleCols, 
+          main = "Heatmap of Gene Predictors vs Samples")
 ```
 The heatmap just provides another way at looking at the closeness of relationship between the different gene predictors and likewise between the different samples.  The color-coding of the columns and rows has a bug in it at the moment.  
 
@@ -710,8 +707,6 @@ In the dataset we'll now look at, I'm not performing any filtering step.
 The code is a bit extensive, partly because it hasn't been cleaned up with common functions.  It's not shown in the .html nor .md versions of this file.  It can be seen in the .Rmd version. 
 
 ```{r, include=FALSE}
-
-
 wangMatrix <- read.table(WANG_MATRIX, header=TRUE)       # rownames okay now
 wangSelectedSamples <- colnames(wangMatrix)
 wangTCGAsamples <- wangSelectedSamples[grep("^TCGA", wangSelectedSamples)] %>%
