@@ -1140,13 +1140,73 @@ findName <- function(ensembl, LogRegModel2){
 missingNames <- unlist(lapply(missing, findName, LogRegModel2=LogRegModel2))
 modelAnnot2$hgnc_symbol[missingIndices] <- missingNames
 
-print(modelAnnot2)
+print(modelAnnot2, n=57)
 ```
 We can see that more gene predictors are selected and that the magnitude of the predictors is a bit lower (largest ones 0.3 vs 0.45)
 
 #### Using Correlation Matrix to Compare Predictors
 
+```{r}
+trainM <- train$M_norm
+# clean up gene names.  I'm going to stick with Ensembl IDs until
+# point of display
+colnames(trainM) <- gsub(".*.\\.(ENSG.*$)", "\\1", colnames(trainM))
+colnames(trainM) <- gsub("\\..*$", "", colnames(trainM))
+#colnames(trainM) <- gsub("\\.ENSG.*$", "", colnames(trainM))
+#colnames(trainM) <- gsub("\\.", "-", colnames(trainM))
 
+# gather original and new predictors.  I'll use 
+origPredictors <- modelAnnot$ensembl_gene_id #hgnc_symbol
+origPredictors <- gsub("\\..*$", "", origPredictors)
+secondPredictors <- modelAnnot2$ensembl_gene_id #hgnc_symbol
+secondPredictors <- gsub("\\..*$", "", secondPredictors)
+allPredictors <- c(origPredictors, secondPredictors)
+#allPredictors <- gsub("\\..*$", "", allPredictors)
+#allPredictors <- gsub("\\.", "-", allPredictors)
+#corrMatrixAll <- cor(trainM[,c(allPredictors)])
+#corrValues99Predictors <- data.frame(corrMatrix[upper.tri(corrMatrix)])
+corrMatrixOrig <- cor(trainM[,c(origPredictors)])
+corrValues42Predictors <- data.frame(corrMatrixOrig[upper.tri(corrMatrixOrig)])
+corrMatrixSecond <- cor(trainM[,c(secondPredictors)])
+corrValues57Predictors <- data.frame(corrMatrixSecond[upper.tri(corrMatrixSecond)])
+
+#corrValues99Predictors <- 
+#cbind(corrValues99Predictors, rep("ALL", length(corrValues99Predictors)))
+corrValues57Predictors <- 
+cbind(corrValues57Predictors, rep("57", length(corrValues57Predictors)))
+corrValues42Predictors <- 
+cbind(corrValues42Predictors, rep("42", length(corrValues42Predictors)))
+
+# grab sample of other genes in trainM:
+set.seed(SEED)
+randSamples <- sample(colnames(trainM)[!colnames(trainM) %in% allPredictors], 100)
+# colnames(trainM[,randSamples] %in% allPredictors) #OK
+corrMatrixNonPredictors <- cor(trainM[,randSamples])
+corrValuesNonPredictors <- data.frame(corrMatrixNonPredictors[
+  upper.tri(corrMatrixNonPredictors)])
+corrValuesNonPredictors <- 
+  cbind(corrValuesNonPredictors, rep("NonPredictors", length(corrValuesNonPredictors)))
+
+# corrMatrixNonPredictors <- cor(trainM[,!colnames(trainM) %in% allPredictors])
+# corrValues32kNonPredictors <- 
+# data.frame(corrMatrixNonPredictors[upper.tri(corrMatrixNonPredictors)])
+# write.table(corrValues32kNonPredictors, sep="\t", file="nonPredictorsCC.tsv")
+
+
+colnames(corrValuesNonPredictors) <- c("CC", "PredictorGroup")
+colnames(corrValues57Predictors) <- c("CC", "PredictorGroup")
+colnames(corrValues42Predictors) <- c("CC", "PredictorGroup")
+
+corrValuesAll <- rbind(corrValuesNonPredictors, corrValues57Predictors,
+                       corrValues42Predictors)
+
+
+ggplot(corrValuesAll, aes(x=CC)) +
+  geom_density(aes(fill=PredictorGroup),alpha=0.5) + #, binwidth=0.05) +
+  scale_x_continuous(breaks=seq(-1,1,0.05), limits=c(-1.05, 1.05)) +
+  theme(axis.text.x = element_text(angle=-90, size=6)) +
+  xlab("correlation coefficient") + xlim(-1,1)
+```
 
 
 

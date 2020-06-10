@@ -1149,3 +1149,175 @@ table(test$outcome, testPredictions_toil)
     ##   1  0 49
 
 We see that the 2nd model performs just as well as the first model.
+\#\#\#\# Predictor Comparison Across
+Models
+
+``` r
+# get predictor gene names and Ensembl IDs while removing Intercept term:
+ensembl_geneID2 <- LogRegModel2$predEntrezID[2:length(LogRegModel2$predEntrezID)]
+predictorGeneName2s <- LogRegModel2$predGeneNames[2:length(LogRegModel2$predGeneNames)]
+modelCoefs2 <- LogRegModel2$predCoefs[2:length(LogRegModel2$predCoefs)]
+ensembl_coefs2 <- data.frame(ensembl_geneID2, modelCoefs2, abs(modelCoefs2)) 
+
+
+
+
+Ensmbl_HGNC_SYM_DESC <- read.csv(BIOMART_GENE_ATTR_FILE, header=TRUE, stringsAsFactors = F)
+predGeneAnnot2 <- Ensmbl_HGNC_SYM_DESC %>% dplyr::filter(ensembl_gene_id %in% ensembl_geneID2) 
+# join with ensembl-coeff df-abs coeff
+rm(Ensmbl_HGNC_SYM_DESC)
+joinedAnnot2 <- inner_join(predGeneAnnot2, ensembl_coefs2, 
+                          by=c("ensembl_gene_id" = "ensembl_geneID2"))
+# arrange by order to desc abs coeff and print select columns:
+joinedAnnot2$description <- gsub(" \\[.*$","",joinedAnnot2$description) # %>% substr(1,40)
+modelAnnot2 <- as_tibble(joinedAnnot2 %>% arrange(desc(abs.modelCoefs2.)) %>% 
+                           dplyr::select("ensembl_gene_id", "hgnc_symbol", "modelCoefs2",
+                                         "description"))
+
+# find and fill in missing information:
+missingIndices <- c(which(modelAnnot2$hgnc_symbol == ""))
+missing <- modelAnnot2$ensembl_gene_id[missingIndices]
+findName <- function(ensembl, LogRegModel2){
+  name <- LogRegModel2$predGeneNames[which(LogRegModel2$predEntrezID == ensembl)]
+  return(name)
+}
+#findName(missing[1], LogRegModel2)
+missingNames <- unlist(lapply(missing, findName, LogRegModel2=LogRegModel2))
+modelAnnot2$hgnc_symbol[missingIndices] <- missingNames
+
+print(modelAnnot2, n=57)
+```
+
+    ## # A tibble: 59 x 4
+    ##    ensembl_gene_id hgnc_symbol   modelCoefs2 description                        
+    ##    <chr>           <chr>               <dbl> <chr>                              
+    ##  1 ENSG00000149380 P4HA3             0.304   prolyl 4-hydroxylase subunit alpha…
+    ##  2 ENSG00000137070 IL11RA           -0.302   interleukin 11 receptor subunit al…
+    ##  3 ENSG00000177732 SOX12             0.259   SRY-box transcription factor 12    
+    ##  4 ENSG00000103647 CORO2B           -0.247   coronin 2B                         
+    ##  5 ENSG00000177363 LRRN4CL          -0.242   LRRN4 C-terminal like              
+    ##  6 ENSG00000064300 NGFR             -0.240   nerve growth factor receptor       
+    ##  7 ENSG00000143761 ARF1              0.235   ADP ribosylation factor 1          
+    ##  8 ENSG00000167434 CA4              -0.199   carbonic anhydrase 4               
+    ##  9 ENSG00000277954 RP11.679B19.1    -0.194   novel transcript, antisense to WWOX
+    ## 10 ENSG00000205155 PSENEN            0.179   presenilin enhancer, gamma-secreta…
+    ## 11 ENSG00000277494 GPIHBP1          -0.179   glycosylphosphatidylinositol ancho…
+    ## 12 ENSG00000263400 TMEM220-AS1      -0.169   TMEM220 antisense RNA 1            
+    ## 13 ENSG00000226031 FGF13-AS1        -0.169   FGF13 antisense RNA 1              
+    ## 14 ENSG00000111077 TNS2             -0.155   tensin 2                           
+    ## 15 ENSG00000160991 ORAI2             0.150   ORAI calcium release-activated cal…
+    ## 16 ENSG00000187824 TMEM220          -0.138   transmembrane protein 220          
+    ## 17 ENSG00000130520 LSM4              0.131   LSM4 homolog, U6 small nuclear RNA…
+    ## 18 ENSG00000182601 HS3ST4           -0.127   heparan sulfate-glucosamine 3-sulf…
+    ## 19 ENSG00000183155 RABIF             0.101   RAB interacting factor             
+    ## 20 ENSG00000226005 LINC02660        -0.0987  long intergenic non-protein coding…
+    ## 21 ENSG00000176973 FAM89B            0.0945  family with sequence similarity 89…
+    ## 22 ENSG00000018625 ATP1A2           -0.0935  ATPase Na+/K+ transporting subunit…
+    ## 23 ENSG00000038427 VCAN              0.0891  versican                           
+    ## 24 ENSG00000236264 RPL26P30          0.0889  ribosomal protein L26 pseudogene 30
+    ## 25 ENSG00000072778 ACADVL           -0.0883  acyl-CoA dehydrogenase very long c…
+    ## 26 ENSG00000174611 KY               -0.0866  kyphoscoliosis peptidase           
+    ## 27 ENSG00000254445 HSPB2-C11orf…    -0.0850  HSPB2-C11orf52 readthrough (NMD ca…
+    ## 28 ENSG00000261468 RP11.1024P17…    -0.0783  novel transcript                   
+    ## 29 ENSG00000105438 KDELR1            0.0755  KDEL endoplasmic reticulum protein…
+    ## 30 ENSG00000266289 RP11.1C8.6        0.0725  novel transcript                   
+    ## 31 ENSG00000121900 TMEM54            0.0701  transmembrane protein 54           
+    ## 32 ENSG00000136158 SPRY2            -0.0668  sprouty RTK signaling antagonist 2 
+    ## 33 ENSG00000166292 TMEM100          -0.0616  transmembrane protein 100          
+    ## 34 ENSG00000182253 SYNM             -0.0593  synemin                            
+    ## 35 ENSG00000237949 LINC00844        -0.0588  long intergenic non-protein coding…
+    ## 36 ENSG00000143543 JTB               0.0574  jumping translocation breakpoint   
+    ## 37 ENSG00000136026 CKAP4             0.0553  cytoskeleton associated protein 4  
+    ## 38 ENSG00000136842 TMOD1            -0.0505  tropomodulin 1                     
+    ## 39 ENSG00000182732 RGS6             -0.0493  regulator of G protein signaling 6 
+    ## 40 ENSG00000160161 CILP2             0.0485  cartilage intermediate layer prote…
+    ## 41 ENSG00000262115 RP11.455O6.2     -0.0434  novel transcript, antisense to AZI1
+    ## 42 ENSG00000213186 TRIM59            0.0422  tripartite motif containing 59     
+    ## 43 ENSG00000144136 SLC20A1           0.0418  solute carrier family 20 member 1  
+    ## 44 ENSG00000134986 NREP              0.0354  neuronal regeneration related prot…
+    ## 45 ENSG00000163382 NAXE              0.0352  NAD(P)HX epimerase                 
+    ## 46 ENSG00000109906 ZBTB16           -0.0323  zinc finger and BTB domain contain…
+    ## 47 ENSG00000104415 CCN4              0.0295  cellular communication network fac…
+    ## 48 ENSG00000265972 TXNIP            -0.0283  thioredoxin interacting protein    
+    ## 49 ENSG00000163618 CADPS             0.0240  calcium dependent secretion activa…
+    ## 50 ENSG00000102970 CCL17             0.0218  C-C motif chemokine ligand 17      
+    ## 51 ENSG00000077264 PAK3             -0.0173  p21 (RAC1) activated kinase 3      
+    ## 52 ENSG00000261740 BOLA2-SMG1P6      0.0119  BOLA2-SMG1P6 readthrough           
+    ## 53 ENSG00000151882 CCL28            -0.0106  C-C motif chemokine ligand 28      
+    ## 54 ENSG00000168874 ATOH8            -0.00946 atonal bHLH transcription factor 8 
+    ## 55 ENSG00000240972 MIF               0.00903 macrophage migration inhibitory fa…
+    ## 56 ENSG00000102100 SLC35A2           0.00444 solute carrier family 35 member A2 
+    ## 57 ENSG00000259407 RP11.158M2.3     -0.00113 novel transcript, antisense to AKA…
+    ## # … with 2 more rows
+
+We can see that more gene predictors are selected and that the magnitude
+of the predictors is a bit lower (largest ones 0.3 vs 0.45)
+
+#### Using Correlation Matrix to Compare Predictors
+
+``` r
+trainM <- train$M_norm
+# clean up gene names.  I'm going to stick with Ensembl IDs until
+# point of display
+colnames(trainM) <- gsub(".*.\\.(ENSG.*$)", "\\1", colnames(trainM))
+colnames(trainM) <- gsub("\\..*$", "", colnames(trainM))
+#colnames(trainM) <- gsub("\\.ENSG.*$", "", colnames(trainM))
+#colnames(trainM) <- gsub("\\.", "-", colnames(trainM))
+
+# gather original and new predictors.  I'll use 
+origPredictors <- modelAnnot$ensembl_gene_id #hgnc_symbol
+origPredictors <- gsub("\\..*$", "", origPredictors)
+secondPredictors <- modelAnnot2$ensembl_gene_id #hgnc_symbol
+secondPredictors <- gsub("\\..*$", "", secondPredictors)
+allPredictors <- c(origPredictors, secondPredictors)
+#allPredictors <- gsub("\\..*$", "", allPredictors)
+#allPredictors <- gsub("\\.", "-", allPredictors)
+#corrMatrixAll <- cor(trainM[,c(allPredictors)])
+#corrValues99Predictors <- data.frame(corrMatrix[upper.tri(corrMatrix)])
+corrMatrixOrig <- cor(trainM[,c(origPredictors)])
+corrValues42Predictors <- data.frame(corrMatrixOrig[upper.tri(corrMatrixOrig)])
+corrMatrixSecond <- cor(trainM[,c(secondPredictors)])
+corrValues57Predictors <- data.frame(corrMatrixSecond[upper.tri(corrMatrixSecond)])
+
+#corrValues99Predictors <- 
+#cbind(corrValues99Predictors, rep("ALL", length(corrValues99Predictors)))
+corrValues57Predictors <- 
+cbind(corrValues57Predictors, rep("57", length(corrValues57Predictors)))
+corrValues42Predictors <- 
+cbind(corrValues42Predictors, rep("42", length(corrValues42Predictors)))
+
+# grab sample of other genes in trainM:
+set.seed(SEED)
+randSamples <- sample(colnames(trainM)[!colnames(trainM) %in% allPredictors], 100)
+# colnames(trainM[,randSamples] %in% allPredictors) #OK
+corrMatrixNonPredictors <- cor(trainM[,randSamples])
+corrValuesNonPredictors <- data.frame(corrMatrixNonPredictors[
+  upper.tri(corrMatrixNonPredictors)])
+corrValuesNonPredictors <- 
+  cbind(corrValuesNonPredictors, rep("NonPredictors", length(corrValuesNonPredictors)))
+
+# corrMatrixNonPredictors <- cor(trainM[,!colnames(trainM) %in% allPredictors])
+# corrValues32kNonPredictors <- 
+# data.frame(corrMatrixNonPredictors[upper.tri(corrMatrixNonPredictors)])
+# write.table(corrValues32kNonPredictors, sep="\t", file="nonPredictorsCC.tsv")
+
+
+colnames(corrValuesNonPredictors) <- c("CC", "PredictorGroup")
+colnames(corrValues57Predictors) <- c("CC", "PredictorGroup")
+colnames(corrValues42Predictors) <- c("CC", "PredictorGroup")
+
+corrValuesAll <- rbind(corrValuesNonPredictors, corrValues57Predictors,
+                       corrValues42Predictors)
+
+
+ggplot(corrValuesAll, aes(x=CC)) +
+  geom_density(aes(fill=PredictorGroup),alpha=0.5) + #, binwidth=0.05) +
+  scale_x_continuous(breaks=seq(-1,1,0.05), limits=c(-1.05, 1.05)) +
+  theme(axis.text.x = element_text(angle=-90, size=6)) +
+  xlab("correlation coefficient") + xlim(-1,1)
+```
+
+    ## Scale for 'x' is already present. Adding another scale for 'x', which will
+    ## replace the existing scale.
+
+![](Toil_Analysis_ObjOrient_files/figure-gfm/unnamed-chunk-49-1.png)<!-- -->
