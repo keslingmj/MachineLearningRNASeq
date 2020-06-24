@@ -430,6 +430,23 @@ storeMODEL <- function(coefsToil, train=train){
 LogRegModel <- storeMODEL(coefsToil, train)
 
 ```
+#### Creating Correlations with Outcome Vector for GSEA Analysis
+```{r}
+# calculate correlation coefficient pairwise between the
+# outcome variable and each of the 42 predictors, then sort
+predictorsCorr <- sort(apply(LogRegModel$modelDF, 2, cor,
+                             y=train$outcome,
+                             method="pearson"))
+corrDF <- cbind(rep(1, length(predictorsCorr)), predictorsCorr)
+# write vector to text file:
+write.table(corrDF, "predictors42corr.txt", sep="\t") # not used
+
+write.table(train$outcome, "outcome.cls.txt") # had to modify format
+
+write.table(t(LogRegModel$modelDF), "predictorExpr.txt",
+            sep="\t")
+
+```
 ## Working with Test Data  
 
 ### Filter and Scale Test Data.  
@@ -491,6 +508,28 @@ I'm at 100% sensitivity and 100% specificity.
 ```{r, include=F}
 # reclaim memory
 rm(toilTrain, toilTest, tmp)
+```
+#### Create Visual for Test Predictions
+```{r}
+testPreds95 <- toilTestFiltScal42 %*% LogRegModel$predCoefs
+testPreds95Probs <- 1/(1 + exp(-1 * testPreds95))
+testPreds95_DF <- data.frame(cbind(testPreds95Probs,
+                                   c(rep(0, 46), rep(1, 49))))
+colnames(testPreds95_DF) <- c("probability","outcome")
+testPreds95_DF <- testPreds95_DF %>%       # sort on probability
+                    arrange(probability)
+testPreds95_DF <- cbind(index=1:95, testPreds95_DF) # add idx
+
+colorsOutcome <- c("#E6550D",  "#56B4E9")
+
+ggplot(testPreds95_DF) +
+  geom_point(aes(x=index, y=probability, color=as.factor(outcome))) +
+  ggtitle("Prediction Probabilities of Test Samples") +
+  xlab("Test Sample") + theme_bw() +
+  scale_color_manual(name="Outcome",
+                      breaks = c("0", "1"),
+                      values = c(colorsOutcome[1], colorsOutcome[2]), 
+                      labels = c("Healthy", "Tumor"))
 ```
 ## Why does the model perform so well?
 I expected that the logistic regression with a lasso regularizer would perform okay, but not nearly as well as it did.  The question is why?  Is it simply that tumors have a sufficiently different genetic programming that they can easily be partitioned from healthy samples?  
