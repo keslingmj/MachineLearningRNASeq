@@ -341,6 +341,59 @@ storeMODEL <- function(coefsToil, train=train){
 LogRegModel <- storeMODEL(coefsToil, train)
 ```
 
+#### Creating Correlations with Outcome Vector for GSEA Analysis
+
+``` r
+if(FALSE){
+  # calculate correlation coefficient pairwise between the
+  # outcome variable and each of the 42 predictors, then sort
+  predictorsCorr <- sort(apply(LogRegModel$modelDF, 2, cor,
+                               y=train$outcome,
+                               method="pearson"))
+  corrDF <- cbind(rep(1, length(predictorsCorr)), predictorsCorr)
+  # write vector to text file:
+  write.table(corrDF, "predictors42corr.txt", sep="\t") # not used
+  
+  write.table(train$outcome, "outcome.cls.txt") # had to modify format
+  
+  write.table(t(LogRegModel$modelDF), "predictorExpr.txt",
+              sep="\t")
+  
+  #### Going to output the entire training dataframe, transposed.
+  #### the outcome variable is the same as above.
+  write.table(t(train$M_norm), "training287Expr.txt", sep="\t")
+  
+  ensembl_geneID <- gsub(".*(ENSG.*.$)","\\1",rownames(t(train$M_norm))) %>%
+  {gsub("\\..*$", "", .)}
+  genes <- gsub("(.*)\\.ENSG.*","\\1",rownames(t(train$M_norm))) %>%
+    {gsub("\\.", "-", .)}
+  
+  
+  Ensmbl_HGNC_SYM_DESC <- read.csv(BIOMART_GENE_ATTR_FILE, header=TRUE, stringsAsFactors = F)
+  
+  idx_match <- which(ensembl_geneID %in% Ensmbl_HGNC_SYM_DESC$ensembl_gene_id)
+  
+  train_inverted <- t(train$M_norm)
+  train_inverted <- train_inverted[idx_match,]
+  rownames(train_inverted) <- ensembl_geneID[idx_match]
+  # sum(as.numeric(table(rownames(train_inverted))) > 1)
+  
+  write.table(train_inverted, "training287Expr.txt", sep="\t")
+  
+  predGeneAnnot <- Ensmbl_HGNC_SYM_DESC %>% dplyr::filter(ensembl_gene_id %in% ensembl_geneID)
+  predGeneAnnot$description <- gsub(" \\[.*$","",predGeneAnnot$description)
+  # join with ensembl-coeff df-abs coeff
+  rm(Ensmbl_HGNC_SYM_DESC)
+  #joinedAnnot <- inner_join(predGeneAnnot, ensembl_coefs, by=c("ensembl_gene_id" = "ensembl_geneID"))
+  # arrange by order to desc abs coeff and print select columns:
+  
+  chip_DF <- data.frame(predGeneAnnot %>% dplyr::select("ensembl_gene_id", 
+                                                       "hgnc_symbol", "description"))
+  colnames(chip_DF) <- c("Probe Set ID", "Gene Symbol", "Gene Title")
+  write.table(chip_DF, "brca.chip", sep="\t")
+}
+```
+
 ## Working with Test Data
 
 ### Filter and Scale Test Data.
@@ -415,6 +468,8 @@ We’re just keeping the 42 predictors from toilTestFiltScaled
 colIDs <- which(colnames(test$M_norm) %in% 
                    LogRegModel$predFullNames[2:length(LogRegModel$predFullNames)])
 toilTestFiltScal42 <- test$M_norm[,colIDs]                    # SEPARATE FROM OBJECT
+toilTrainFiltScal42 <- train$M_norm[,colIDs]
+toilTrainFiltScal42 <- cbind(rep(1,nrow(toilTrainFiltScal42)), toilTrainFiltScal42)
 ```
 
 #### 5\. Test Set Sensitivity and Specificity
@@ -437,6 +492,57 @@ table(test$outcome, testPredictions_toil)
     ##   1  0 49
 
 I’m at 100% sensitivity and 100% specificity.
+
+#### Create Visual for Test Predictions
+
+``` r
+testPreds95 <- toilTestFiltScal42 %*% LogRegModel$predCoefs
+testPreds95Probs <- 1/(1 + exp(-1 * testPreds95))
+testPreds95_DF <- data.frame(cbind(testPreds95Probs,
+                                   c(rep(0, 46), rep(1, 49))))
+colnames(testPreds95_DF) <- c("probability","outcome")
+testPreds95_DF <- testPreds95_DF %>%       # sort on probability
+                    arrange(probability)
+testPreds95_DF <- cbind(index=1:95, testPreds95_DF) # add idx
+
+colorsOutcome <- c("#E6550D",  "#56B4E9")
+
+ggplot(testPreds95_DF) +
+  geom_point(aes(x=index, y=probability, color=as.factor(outcome))) +
+  ggtitle("Prediction Probabilities of Test Samples") +
+  xlab("Test Sample") + theme_bw() + ylab("Predicted Probability") +
+  scale_color_manual(name="Actual Outcome",
+                      breaks = c("0", "1"),
+                      values = c(colorsOutcome[1], colorsOutcome[2]), 
+                      labels = c("Healthy", "Tumor"))
+```
+
+![](Toil_Analysis_ObjOrient_files/figure-gfm/unnamed-chunk-24-1.png)<!-- -->
+\#\#\#\# Create Visual for Train Predictions
+
+``` r
+trainPreds <- toilTrainFiltScal42 %*% LogRegModel$predCoefs
+trainPredsProbs <- 1/(1 + exp(-1 * trainPreds))
+trainPreds_DF <- data.frame(cbind(trainPredsProbs,
+                                   c(rep(0, 139), rep(1, 148))))
+colnames(trainPreds_DF) <- c("probability","outcome")
+trainPreds_DF <- trainPreds_DF %>%       # sort on probability
+                    arrange(probability)
+trainPreds_DF <- cbind(index=1:287, trainPreds_DF) # add idx
+
+colorsOutcome <- c("#E6550D",  "#56B4E9")
+
+ggplot(trainPreds_DF) +
+  geom_point(aes(x=index, y=probability, color=as.factor(outcome))) +
+  ggtitle("Prediction Probabilities of Training Samples") +
+  xlab("Training Sample") + theme_bw() + ylab("Predicted Probability") +
+  scale_color_manual(name="Actual Outcome",
+                      breaks = c("0", "1"),
+                      values = c(colorsOutcome[1], colorsOutcome[2]), 
+                      labels = c("Healthy", "Tumor"))
+```
+
+![](Toil_Analysis_ObjOrient_files/figure-gfm/unnamed-chunk-25-1.png)<!-- -->
 
 ## Why does the model perform so well?
 
@@ -488,7 +594,7 @@ ggplot(PC_plot) +
                       labels = c("Healthy-GTEX", "Healthy-TCGA", "Cancer-TCGA"))
 ```
 
-![](Toil_Analysis_ObjOrient_files/figure-gfm/unnamed-chunk-23-1.png)<!-- -->
+![](Toil_Analysis_ObjOrient_files/figure-gfm/unnamed-chunk-26-1.png)<!-- -->
 
 We can see that even only employing the first 2 Principal Components,
 that:  
@@ -544,7 +650,7 @@ dfCompMelt <- melt(dfComponents)
 plotPCs_1d(dfCompMelt)
 ```
 
-![](Toil_Analysis_ObjOrient_files/figure-gfm/unnamed-chunk-24-1.png)<!-- -->
+![](Toil_Analysis_ObjOrient_files/figure-gfm/unnamed-chunk-27-1.png)<!-- -->
 We see that the 2nd and 3rd PCs give pretty good outcome variable
 separation. Let’s look at pairwise PC plots.
 
@@ -559,7 +665,7 @@ grid.arrange(ls[[1]], ls[[2]], ls[[3]], ls[[4]], ls[[5]], ls[[6]],
              ls[[7]], ls[[8]], ls[[9]], ls[[10]], ncol=2)
 ```
 
-![](Toil_Analysis_ObjOrient_files/figure-gfm/unnamed-chunk-25-1.png)<!-- -->
+![](Toil_Analysis_ObjOrient_files/figure-gfm/unnamed-chunk-28-1.png)<!-- -->
 It appears that PC2 and PC2 together perhaps give the best separation.
 
 ### What Genes are the Model Predictors?
@@ -683,7 +789,7 @@ ggplot(predict42scaledMelt, aes(x=Var2, y=value)) + #, colour=colr)) +
 
     ## Warning: Removed 12 rows containing missing values (geom_point).
 
-![](Toil_Analysis_ObjOrient_files/figure-gfm/unnamed-chunk-28-1.png)<!-- -->
+![](Toil_Analysis_ObjOrient_files/figure-gfm/unnamed-chunk-31-1.png)<!-- -->
 We can see that the majority of these gene predictors have either a
 higher level of expression in tumors (positive coefficient) or a higher
 level of expression in healthy tissues (negative coefficient). 2 genes
@@ -713,7 +819,7 @@ ggplot(df03) +
   ggtitle("Training Sample Separation Using Only 2 Genes")
 ```
 
-![](Toil_Analysis_ObjOrient_files/figure-gfm/unnamed-chunk-29-1.png)<!-- -->
+![](Toil_Analysis_ObjOrient_files/figure-gfm/unnamed-chunk-32-1.png)<!-- -->
 \#\#\# Using the same 2 genes to separate out healthy and tumor samples
 in Test Set We’ll repeat the above figure, but for Test data
 only
@@ -745,7 +851,7 @@ ggplot(df04) +
   ggtitle("Test Sample Separation Using Only 2 Genes")
 ```
 
-![](Toil_Analysis_ObjOrient_files/figure-gfm/unnamed-chunk-30-1.png)<!-- -->
+![](Toil_Analysis_ObjOrient_files/figure-gfm/unnamed-chunk-33-1.png)<!-- -->
 
 We can see that 2 genes with coefficients that are large, but of
 opposite sign, nearly create a separating hyperplane between the tumors
@@ -785,7 +891,7 @@ heatmap.2(as.matrix(LogRegModel$modelDF),
           main = "Heatmap of Gene Predictors vs Samples")
 ```
 
-![](Toil_Analysis_ObjOrient_files/figure-gfm/unnamed-chunk-31-1.png)<!-- -->
+![](Toil_Analysis_ObjOrient_files/figure-gfm/unnamed-chunk-34-1.png)<!-- -->
 
 ``` r
 undebug(heatmap.2)
@@ -985,7 +1091,7 @@ ggplot(trainPredictorsMelt, aes(x=Var2, y=value, fill=class)) + geom_boxplot() +
 
     ## Warning: Removed 224 rows containing non-finite values (stat_boxplot).
 
-![](Toil_Analysis_ObjOrient_files/figure-gfm/unnamed-chunk-38-1.png)<!-- -->
+![](Toil_Analysis_ObjOrient_files/figure-gfm/unnamed-chunk-41-1.png)<!-- -->
 This figure illustrates the problem we’re having quite well.  
 The gene-level centering and scaling we just performed on the Stage I-IV
 TCGA tumors was done based ONLY on the tumor data for each gene (blue
@@ -1099,7 +1205,7 @@ fitToil.lasso2 <- glmnet(trainM_no42, train$outcome, family="binomial",
 plot(fitToil.lasso2, xvar="lambda", label=TRUE, col=mypal)
 ```
 
-![](Toil_Analysis_ObjOrient_files/figure-gfm/unnamed-chunk-44-1.png)<!-- -->
+![](Toil_Analysis_ObjOrient_files/figure-gfm/unnamed-chunk-47-1.png)<!-- -->
 
 ``` r
 set.seed(SEED2)                                # need same seed as previous step
@@ -1108,7 +1214,7 @@ cv.Toil.lasso2 <- cv.glmnet(trainM_no42, train$outcome
 plot(cv.Toil.lasso2)
 ```
 
-![](Toil_Analysis_ObjOrient_files/figure-gfm/unnamed-chunk-45-1.png)<!-- -->
+![](Toil_Analysis_ObjOrient_files/figure-gfm/unnamed-chunk-48-1.png)<!-- -->
 
 The Lasso Coefficient plots suggest that a lot of the same predictor
 value of the data are still in the dataset after removing the original
@@ -1320,4 +1426,4 @@ ggplot(corrValuesAll, aes(x=CC)) +
     ## Scale for 'x' is already present. Adding another scale for 'x', which will
     ## replace the existing scale.
 
-![](Toil_Analysis_ObjOrient_files/figure-gfm/unnamed-chunk-49-1.png)<!-- -->
+![](Toil_Analysis_ObjOrient_files/figure-gfm/unnamed-chunk-52-1.png)<!-- -->

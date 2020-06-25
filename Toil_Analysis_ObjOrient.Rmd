@@ -432,20 +432,54 @@ LogRegModel <- storeMODEL(coefsToil, train)
 ```
 #### Creating Correlations with Outcome Vector for GSEA Analysis
 ```{r}
-# calculate correlation coefficient pairwise between the
-# outcome variable and each of the 42 predictors, then sort
-predictorsCorr <- sort(apply(LogRegModel$modelDF, 2, cor,
-                             y=train$outcome,
-                             method="pearson"))
-corrDF <- cbind(rep(1, length(predictorsCorr)), predictorsCorr)
-# write vector to text file:
-write.table(corrDF, "predictors42corr.txt", sep="\t") # not used
-
-write.table(train$outcome, "outcome.cls.txt") # had to modify format
-
-write.table(t(LogRegModel$modelDF), "predictorExpr.txt",
-            sep="\t")
-
+if(FALSE){
+  # calculate correlation coefficient pairwise between the
+  # outcome variable and each of the 42 predictors, then sort
+  predictorsCorr <- sort(apply(LogRegModel$modelDF, 2, cor,
+                               y=train$outcome,
+                               method="pearson"))
+  corrDF <- cbind(rep(1, length(predictorsCorr)), predictorsCorr)
+  # write vector to text file:
+  write.table(corrDF, "predictors42corr.txt", sep="\t") # not used
+  
+  write.table(train$outcome, "outcome.cls.txt") # had to modify format
+  
+  write.table(t(LogRegModel$modelDF), "predictorExpr.txt",
+              sep="\t")
+  
+  #### Going to output the entire training dataframe, transposed.
+  #### the outcome variable is the same as above.
+  write.table(t(train$M_norm), "training287Expr.txt", sep="\t")
+  
+  ensembl_geneID <- gsub(".*(ENSG.*.$)","\\1",rownames(t(train$M_norm))) %>%
+  {gsub("\\..*$", "", .)}
+  genes <- gsub("(.*)\\.ENSG.*","\\1",rownames(t(train$M_norm))) %>%
+    {gsub("\\.", "-", .)}
+  
+  
+  Ensmbl_HGNC_SYM_DESC <- read.csv(BIOMART_GENE_ATTR_FILE, header=TRUE, stringsAsFactors = F)
+  
+  idx_match <- which(ensembl_geneID %in% Ensmbl_HGNC_SYM_DESC$ensembl_gene_id)
+  
+  train_inverted <- t(train$M_norm)
+  train_inverted <- train_inverted[idx_match,]
+  rownames(train_inverted) <- ensembl_geneID[idx_match]
+  # sum(as.numeric(table(rownames(train_inverted))) > 1)
+  
+  write.table(train_inverted, "training287Expr.txt", sep="\t")
+  
+  predGeneAnnot <- Ensmbl_HGNC_SYM_DESC %>% dplyr::filter(ensembl_gene_id %in% ensembl_geneID)
+  predGeneAnnot$description <- gsub(" \\[.*$","",predGeneAnnot$description)
+  # join with ensembl-coeff df-abs coeff
+  rm(Ensmbl_HGNC_SYM_DESC)
+  #joinedAnnot <- inner_join(predGeneAnnot, ensembl_coefs, by=c("ensembl_gene_id" = "ensembl_geneID"))
+  # arrange by order to desc abs coeff and print select columns:
+  
+  chip_DF <- data.frame(predGeneAnnot %>% dplyr::select("ensembl_gene_id", 
+                                                       "hgnc_symbol", "description"))
+  colnames(chip_DF) <- c("Probe Set ID", "Gene Symbol", "Gene Title")
+  write.table(chip_DF, "brca.chip", sep="\t")
+}
 ```
 ## Working with Test Data  
 
@@ -492,6 +526,8 @@ We're just keeping the 42 predictors from toilTestFiltScaled
 colIDs <- which(colnames(test$M_norm) %in% 
                    LogRegModel$predFullNames[2:length(LogRegModel$predFullNames)])
 toilTestFiltScal42 <- test$M_norm[,colIDs]                    # SEPARATE FROM OBJECT
+toilTrainFiltScal42 <- train$M_norm[,colIDs]
+toilTrainFiltScal42 <- cbind(rep(1,nrow(toilTrainFiltScal42)), toilTrainFiltScal42)
 ```
 #### 5. Test Set Sensitivity and Specificity
 First we add an intercept column to test predictor variables, then we perform
@@ -510,7 +546,7 @@ I'm at 100% sensitivity and 100% specificity.
 rm(toilTrain, toilTest, tmp)
 ```
 #### Create Visual for Test Predictions
-```{r}
+```{r, fig.height=6, fig.width=8, dpi=300}
 testPreds95 <- toilTestFiltScal42 %*% LogRegModel$predCoefs
 testPreds95Probs <- 1/(1 + exp(-1 * testPreds95))
 testPreds95_DF <- data.frame(cbind(testPreds95Probs,
@@ -525,12 +561,35 @@ colorsOutcome <- c("#E6550D",  "#56B4E9")
 ggplot(testPreds95_DF) +
   geom_point(aes(x=index, y=probability, color=as.factor(outcome))) +
   ggtitle("Prediction Probabilities of Test Samples") +
-  xlab("Test Sample") + theme_bw() +
-  scale_color_manual(name="Outcome",
+  xlab("Test Sample") + theme_bw() + ylab("Predicted Probability") +
+  scale_color_manual(name="Actual Outcome",
                       breaks = c("0", "1"),
                       values = c(colorsOutcome[1], colorsOutcome[2]), 
                       labels = c("Healthy", "Tumor"))
 ```
+#### Create Visual for Train Predictions
+```{r, fig.height=6, fig.width=8, dpi=300}
+trainPreds <- toilTrainFiltScal42 %*% LogRegModel$predCoefs
+trainPredsProbs <- 1/(1 + exp(-1 * trainPreds))
+trainPreds_DF <- data.frame(cbind(trainPredsProbs,
+                                   c(rep(0, 139), rep(1, 148))))
+colnames(trainPreds_DF) <- c("probability","outcome")
+trainPreds_DF <- trainPreds_DF %>%       # sort on probability
+                    arrange(probability)
+trainPreds_DF <- cbind(index=1:287, trainPreds_DF) # add idx
+
+colorsOutcome <- c("#E6550D",  "#56B4E9")
+
+ggplot(trainPreds_DF) +
+  geom_point(aes(x=index, y=probability, color=as.factor(outcome))) +
+  ggtitle("Prediction Probabilities of Training Samples") +
+  xlab("Training Sample") + theme_bw() + ylab("Predicted Probability") +
+  scale_color_manual(name="Actual Outcome",
+                      breaks = c("0", "1"),
+                      values = c(colorsOutcome[1], colorsOutcome[2]), 
+                      labels = c("Healthy", "Tumor"))
+```
+
 ## Why does the model perform so well?
 I expected that the logistic regression with a lasso regularizer would perform okay, but not nearly as well as it did.  The question is why?  Is it simply that tumors have a sufficiently different genetic programming that they can easily be partitioned from healthy samples?  
 
