@@ -288,10 +288,26 @@ addZeroGenes <- function(x, ZERO){    # used when training-ZERO applied to
 
 ## MAIN  
 The RSEM-Counts file originated as the full set of GTEX and TCGA breast samples, both healthy and tumors, which numbered over 1200.  I wanted an equal number of tumor and healthy samples in my training and test set, as it gave me the best chance at seeing how well my predictor performed.  Further, some samples had been found by the Sloan-Kettering group to be of low quality, and these were filtered out.  These steps were performed by another script (Toil_RSEM.Rmd).  Our starting dataframe here, is therefore called *toilSubset*, and has 387 samples.
+
+
+## MODIFICATION: Using ComBat Data
+I'm making a few modifications only in the next chunk in order to 
+switch to using the ComBat dataset.  2020-06-27
 ```{r}
 # just read already-subsetted dataframe
-toilSubset <- read.table(RSEM_COUNTS_FILE, sep="\t", header=TRUE)
-rownames(toilSubset) <- toilSubset$sample
+# toilSubset <- read.table(RSEM_COUNTS_FILE, sep="\t", header=TRUE)
+# rownames(toilSubset) <- toilSubset$sample
+##############
+# SUBSTITUTE COMBAT for TOIL:
+##############
+toilSubset <- read.table(WANG_MATRIX, sep="\t", header=TRUE,
+                         stringsAsFactors = F)
+rownames(toilSubset) <- toilSubset[,1]
+toilSubset <- toilSubset[,3:ncol(toilSubset)]
+
+# columns already ordered as expected
+
+
 ```
 ### RSEM-Counts Dataframe Cleanup
 I'm going to add the gene name to the Ensembl ID to make it easier to figure out what genes we're looking at.  Samples were also sorted in the dataframe so that healthy and tumors were separated, as subsequently were TCGA and GTEX.
@@ -876,7 +892,10 @@ ggplot(predict42scaledMelt, aes(x=Var2, y=value)) + #, colour=colr)) +
 ```
 We can see that the majority of these gene predictors have either a higher level of expression in tumors (positive coefficient) or a higher level of expression in healthy tissues (negative coefficient).  2 genes seem to disciminate poorly--at least on their own.  I thought they might all have coefficients very close to zero.  However, they are mid-to-high range (RP5.1039K5.17 = 0.140 and TRBV11-2 = 0.124).  Beyond this basic point, I haven't pursued this.    
 
-
+### Finding Minimum, Scaled Values for 42 Predictors
+```{r}
+apply(train$M_scaled[,colIDs], 2, function(x) min(x)/median(x))
+```
 ### Using 2 genes to separate out healthy and tumor samples
 I'm going to use MIR497HG and PAFAH1B3 to create a 2D plot of the samples colored by their healthy / tumor status.  I'm choosing these two because they have large coefficients in the model and because they are inversely correlated with one another.
 ```{r, fig.height=8, fig.width=8, dpi=300}
