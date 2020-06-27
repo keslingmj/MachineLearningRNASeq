@@ -480,6 +480,30 @@ if(FALSE){
   colnames(chip_DF) <- c("Probe Set ID", "Gene Symbol", "Gene Title")
   write.table(chip_DF, "brca.chip", sep="\t")
 }
+
+predictorsCorrTotal <- sort(apply(train$M_norm, 2, cor,
+                               y=train$outcome,
+                               method="pearson"))
+#predictorsCorrTotal
+digitalPredCCoutcome <- ifelse(names(predictorsCorrTotal) %in% LogRegModel$predFullNames, 1, 0)
+bottomDigPredCCoutcome <- head(digitalPredCCoutcome, 250)
+topDigPredCCoutcome <- tail(digitalPredCCoutcome, 250)
+topCC <- data.frame(cbind(1:250, topDigPredCCoutcome))
+bottomCC <- data.frame(cbind(1:250, bottomDigPredCCoutcome))
+
+colorsOutcome <- c("#E6550D",  "#56B4E9")
+
+ggplot(topCC) +
+  geom_point(aes(x=V1, y=topDigPredCCoutcome)) +
+  ggtitle("Distribution of Predictors Among Top 250 Genes Correlated with Outcome Variable") +
+  xlab("Genes with Top Pearson's Corr Coeff with Outcome Var") + theme_bw() + ylab("A Predictor in the Model?") 
+
+```
+```{r}
+ggplot(bottomCC) +
+  geom_point(aes(x=V1, y=bottomDigPredCCoutcome)) +
+  ggtitle("Distribution of Predictors Among Bottom 250 Genes Correlated with Outcome Var") +
+  xlab("Genes with Bottom Pearson's Corr Coeff with Outcome Var") + theme_bw() + ylab("A Predictor in the Model?") 
 ```
 ## Working with Test Data  
 
@@ -547,47 +571,71 @@ rm(toilTrain, toilTest, tmp)
 ```
 #### Create Visual for Test Predictions
 ```{r, fig.height=6, fig.width=8, dpi=300}
+generateOutcomeIndicators <- function(names){
+  # given the sample names from a list or df row/colname
+  # will generate a numeric vector for coloring points
+  # according to (1) GTEX sample, (2) TCGA normal, (3) TCGA tumor
+  gtex <- ifelse(grepl("^GTEX", names),1,0)
+  tcgaHealthy <- ifelse(grepl("^TCGA.*.11$", names),2,0)
+  tcgaTumor <- ifelse(grepl("^TCGA.*.01$", names),3,0)
+  return(gtex + tcgaHealthy + tcgaTumor)
+}
+
+
 testPreds95 <- toilTestFiltScal42 %*% LogRegModel$predCoefs
 testPreds95Probs <- 1/(1 + exp(-1 * testPreds95))
-testPreds95_DF <- data.frame(cbind(testPreds95Probs,
-                                   c(rep(0, 46), rep(1, 49))))
+
+outcomeIndicators <- 
+  generateOutcomeIndicators(rownames(testPreds95Probs))
+
+testPreds95_DF <- data.frame(cbind(testPreds95Probs,  # change
+                                   outcomeIndicators))
 colnames(testPreds95_DF) <- c("probability","outcome")
 testPreds95_DF <- testPreds95_DF %>%       # sort on probability
                     arrange(probability)
 testPreds95_DF <- cbind(index=1:95, testPreds95_DF) # add idx
 
-colorsOutcome <- c("#E6550D",  "#56B4E9")
+#colorsOutcome <- c("#E6550D",  "#56B4E9")
+colors3pal <- c("#FDAE6B", "#E6550D",  "#56B4E9")
 
 ggplot(testPreds95_DF) +
   geom_point(aes(x=index, y=probability, color=as.factor(outcome))) +
   ggtitle("Prediction Probabilities of Test Samples") +
   xlab("Test Sample") + theme_bw() + ylab("Predicted Probability") +
   scale_color_manual(name="Actual Outcome",
-                      breaks = c("0", "1"),
-                      values = c(colorsOutcome[1], colorsOutcome[2]), 
-                      labels = c("Healthy", "Tumor"))
+                      breaks = c("1", "2", "3"),
+                      values = c(colors3pal[1], colors3pal[2],
+                                 colors3pal[3]), 
+                      labels = c("GTEX-Healthy", "TCGA-Healthy",
+                                 "TCGA-Tumor"))
 ```
 #### Create Visual for Train Predictions
 ```{r, fig.height=6, fig.width=8, dpi=300}
 trainPreds <- toilTrainFiltScal42 %*% LogRegModel$predCoefs
 trainPredsProbs <- 1/(1 + exp(-1 * trainPreds))
+outcomeIndicators <- 
+  generateOutcomeIndicators(rownames(trainPredsProbs))
+
 trainPreds_DF <- data.frame(cbind(trainPredsProbs,
-                                   c(rep(0, 139), rep(1, 148))))
+                                   outcomeIndicators))
 colnames(trainPreds_DF) <- c("probability","outcome")
 trainPreds_DF <- trainPreds_DF %>%       # sort on probability
                     arrange(probability)
 trainPreds_DF <- cbind(index=1:287, trainPreds_DF) # add idx
 
-colorsOutcome <- c("#E6550D",  "#56B4E9")
+#colorsOutcome <- c("#E6550D",  "#56B4E9")
+colors3pal <- c("#FDAE6B", "#E6550D",  "#56B4E9")
 
 ggplot(trainPreds_DF) +
   geom_point(aes(x=index, y=probability, color=as.factor(outcome))) +
   ggtitle("Prediction Probabilities of Training Samples") +
   xlab("Training Sample") + theme_bw() + ylab("Predicted Probability") +
   scale_color_manual(name="Actual Outcome",
-                      breaks = c("0", "1"),
-                      values = c(colorsOutcome[1], colorsOutcome[2]), 
-                      labels = c("Healthy", "Tumor"))
+                      breaks = c("1", "2", "3"),
+                      values = c(colors3pal[1], colors3pal[2],
+                                 colors3pal[3]), 
+                      labels = c("GTEX-Healthy", "TCGA-Healthy",
+                                 "TCGA-Tumor"))
 ```
 
 ## Why does the model perform so well?
@@ -677,6 +725,89 @@ grid.arrange(ls[[1]], ls[[2]], ls[[3]], ls[[4]], ls[[5]], ls[[6]],
              ls[[7]], ls[[8]], ls[[9]], ls[[10]], ncol=2)
 ```
 It appears that PC2 and PC2 together perhaps give the best separation.
+
+
+### Duplicates in Principal Components
+This is the exact sample Principal Components plot as above, except that I'm only
+going to color the TCGA points that are from the same patient--one healthy and one tumor.
+```{r, fig.height=6, fig.width=8, dpi=300}
+modifyPrognosisByPairs <- function(prognosis, pairedSamples){
+  # Take the prognosis, which is a vector of whether actual sample outcomes
+  # are GTEX-healthy, TCGA-healthy, or TCGA-Tumor and changes the
+  # color indicator to "4" if the samples are not part of a
+  # paired set of TCGA samples
+  names(prognosis) <- gsub("\\.11$","",names(prognosis)) %>%
+                     {gsub("\\.01$", "", .)}
+  prognosis <-
+    replace(prognosis, !names(prognosis) %in% pairedSamples[,1],4)
+  return(prognosis)
+}
+
+
+pairedSamples <- read.csv("confoundingElimi/idsDiff", header=F,
+                          stringsAsFactors = F)
+
+
+PCs <- prcomp(train$M_norm)                               # (data already scaled)
+nComp <- 2
+dfComponents <- predict(PCs, newdata=train$M_norm)[,1:nComp]
+
+
+prognosis <- generateOutcomeIndicators(rownames(dfComponents)) #1/2=healthy, 3=tum
+names(prognosis) <- rownames(dfComponents)
+prognosis <-
+  modifyPrognosisByPairs(prognosis = prognosis, 
+                         pairedSamples = pairedSamples)
+
+
+PC_plot <- data.frame(x=dfComponents[,1], y = dfComponents[,2], col=prognosis)
+colors4pal <- c("#FDAE6B", "#E6550D",  "#56B4E9", "#bdbdbd")
+
+ggplot(PC_plot) + 
+   geom_point(aes(x=x, y=y, color=as.factor(col))) + 
+   ggtitle("PCA Plot of Training Data Coloring Only Paired TCGA Samples") +
+   xlab("PC1") + ylab("PC2") + theme_bw() +
+   scale_color_manual(name="Category",
+                      breaks = c("1", "2", "3", "4"),
+                      values = c(colors4pal[1], colors4pal[2], 
+                                 colors4pal[3], colors4pal[4]),
+                      labels = c("", "Paired-Healthy-TCGA", 
+                                 "Paired-Cancer-TCGA",
+                                 "Unpaired Sample"))
+```
+#### Create Visual for Train Predictions -- Coloring by Paired TCGA Samples from Same Patient
+```{r, fig.height=6, fig.width=8, dpi=300}
+trainPreds <- toilTrainFiltScal42 %*% LogRegModel$predCoefs
+trainPredsProbs <- 1/(1 + exp(-1 * trainPreds))
+outcomeIndicators <- 
+  generateOutcomeIndicators(rownames(trainPredsProbs))
+names(outcomeIndicators) <- rownames(trainPredsProbs)
+
+outcomeIndicators <- modifyPrognosisByPairs(prognosis = outcomeIndicators, 
+                                            pairedSamples = pairedSamples)
+
+
+trainPreds_DF <- data.frame(cbind(trainPredsProbs,
+                                   outcomeIndicators))
+colnames(trainPreds_DF) <- c("probability","outcome")
+trainPreds_DF <- trainPreds_DF %>%       # sort on probability
+                    arrange(probability)
+trainPreds_DF <- cbind(index=1:287, trainPreds_DF) # add idx
+
+colors4pal <- c("#FDAE6B", "#E6550D",  "#56B4E9", "#bdbdbd")
+
+ggplot(trainPreds_DF) +
+  geom_point(aes(x=index, y=probability, color=as.factor(outcome))) +
+  ggtitle("Prediction Probabilities of Training Samples, Coloring Only Paired TCGA Samples") +
+  xlab("Training Sample") + theme_bw() + ylab("Predicted Probability") +
+  scale_color_manual(name="Actual Outcome",
+                      breaks = c("1", "2", "3", "4"),
+                      values = c(colors4pal[1], colors4pal[2],
+                                 colors4pal[3], colors4pal[4]), 
+                      labels = c("", "TCGA-Healthy",
+                                 "TCGA-Tumor", "Unpaired Sample"))
+```
+
 
 ```{r, include=F}
 rm(PCs, dfCompMelt, dfComponents)
@@ -1304,6 +1435,19 @@ ggplot(corrValuesAll, aes(x=CC)) +
   scale_x_continuous(breaks=seq(-1,1,0.05), limits=c(-1.05, 1.05)) +
   theme(axis.text.x = element_text(angle=-90, size=6)) +
   xlab("correlation coefficient") + xlim(-1,1)
+```
+```{R}
+predictorsCorrTotal <- data.frame(predictorsCorrTotal)
+names(predictorsCorrTotal) <- "CC"
+ggplot(corrValuesAll, aes(x=CC)) +
+  geom_density() + #, binwidth=0.05) +
+  scale_x_continuous(breaks=seq(-1,1,0.05), limits=c(-1.05, 1.05)) +
+  theme(axis.text.x = element_text(angle=-90, size=6)) +
+  theme_bw() +
+  ggtitle("Distribution of Correlation Coefficient with Outcome Variable") +
+  xlab("correlation coefficient") + xlim(-1,1)
+  
+  predictorsCorrTotal
 ```
 
 
