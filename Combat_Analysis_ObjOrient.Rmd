@@ -1,0 +1,1879 @@
+---
+title: "Breast Cancer Prediction with ComBat Data"
+author: "Michael Kesling"
+date: "June 2020"
+output: rmarkdown::github_document 
+---
+## Making Cancer Predictions on Breast RNA-Seq Samples
+
+This particular document takes the Toil-normalized TCGA and GTEx breast cancer samples and runs the logistic regression algorithm with lasso regularizer on them.  Importantly, the only sample-to-sample normalization performed in quantile-quantile normalization relative to a single reference sample.  No batch normalization is performed at this point,  as it's the simplest scenario for test samples processed in the clinic, as they will appear one at a time, typically.
+
+The data were downloaded from the UCSC server at:
+https://xenabrowser.net/datapages/?cohort=TCGA%20TARGET%20GTEx&removeHub=https%3A%2F%2Fxena.treehouse.gi.ucsc.edu%3A443
+There are 2 relevant *gene expression RNAseq* datasets there.  *RSEM expected_count (n=19,109)* which is used in this document, and *RSEM expected_count (DESeq2 standardized) (n=19,039)* which was used in the *Toil_Norm.Rmd* file.
+
+
+The *markdown* and *html* versions of this document have some of the code masked for better readability.  To view the full code, see the [.Rmd version](Toil_Analysis_ObjOrient.Rmd).
+
+#### Setting Global Parameters
+For this code to run, one must set the path, on one's machine to the *RSEM_COUNTS_FILE*, which contains the RNASeq data, and the *TOILGENEANNOT* file, which maps the Ensembl identifiers to the gene names.
+```{r setup}
+knitr::opts_chunk$set(echo = TRUE)
+# rmarkdown::render("./Toil_Analysis_ObjOrient.Rmd")
+#######################
+# SET GLOBAL PARAMETERS
+#######################
+RSEM_COUNTS_FILE <- "/Volumes/MK_Ext/Tresorit_iOS/projects/RNA-Seq/MachineLearningRNASeq/toilSubsetRSEM382.txt"
+TOILGENEANNOT <- "/Volumes/MK_Ext/RNA-Seq_2019/TOIL_Data/gencode.v23.annotation.gene.probemap"
+BIOMART_GENE_ATTR_FILE <- "/Volumes/MK_Ext/Tresorit_iOS/projects/RNA-Seq/MachineLearningRNASeq/geneAttr.csv"
+TCGA_ATTR_FILE <- "/Volumes/MK_Ext/Tresorit_iOS/projects/RNA-Seq/data/TCGA_Attributes_full.txt"
+WANG_MATRIX <- "/Volumes/MK_Ext/Tresorit_iOS/projects/RNA-Seq/data/wangBreastFPKM398_Attrib.txt"
+FULL_TOIL_DATA <- "/Users/mjk/RNA-Seq_2019/TOIL_Data/TcgaTargetGtex_gene_expected_count"
+ATTR_FILE = '/Volumes/MK_Ext/Tresorit_iOS/projects/RNA-Seq/data/TCGA_Attributes_full_20200628.txt'
+SEQUENCING_DATE_FILE = "/Volumes/MK_Ext/Tresorit_iOS/projects/RNA-Seq/MachineLearningRNASeq/confoundingElimi/Sequencing_Dates2.tsv"
+SEED <- 233992812
+SEED2 <- 1011
+```
+```{r, include=FALSE}
+######################
+# needed packages
+######################
+require(dplyr);
+require(ggplot2);
+require(magrittr);
+require(caTools);
+# install_github("ririzarr/rafalib")
+# require(rafalib);                     # may not be used
+require(glmnet);
+require(biomaRt);
+# require(BiocGenerics)                 # may not be used
+require(reshape2)
+require(grid)
+require(gridExtra)
+require(heatmap3)
+require(RColorBrewer)
+require(gplots)
+require(BBmisc)
+# require(topGO)
+```
+
+#### Hidden Functions
+There are 3 large functions that don't appear in the .md and .html versions of this document to improve readability: one pre-processes the Toil_RSEM data, one performs TMM sample-to-sample scaling, just like the edgeR method, and the last centers and scales each gene relative to its mean and standard deviation.
+```{r, include=FALSE}
+weightedTrimmedMean <- function(x, trainX=NULL, flag=0){
+   # working with data on natural scale--already filtered and scaled.
+   # The values are represented as fraction of total counts.  So
+   # df should be 'TOILTRAINFILTER' which are not as fracction of total counts, as
+   # this is needed in computing the weights and TMM in the final step.
+   # computing weights requires data that are not fraction of total counts,
+   # so we use x[[3]]
+
+   if(flag==0){                                     # get ref data from x object
+      refName <- x[[8]]
+      refIdx <- which(rownames(x[[4]])==refName)
+      refSample <- x[[4]][refIdx,]
+      refSmpUnscaled <- x[[3]][refIdx,]
+   }
+   if(flag==1){                          # get ref data from training set object
+      refName <- trainX[[8]]
+      refIdx <- which(rownames(trainX[[4]])==refName)
+      refSample <- trainX[[4]][refIdx,]
+      refSmpUnscaled <- trainX[[3]][refIdx,]
+   }
+
+   scalingFactors <- c()
+   
+   for(testIdx in 1:nrow(x[[4]])){
+      # run meat of program
+      testName <- rownames(x$M_scaled)[testIdx]
+      testSample <- x$M_scaled[testIdx,]
+      testSmpUnscaled <- x$M_filt[testIdx,] 
+      
+      refZeros <- which(refSample==0)
+      smpZeros <- which(testSample==0)
+      
+      unionZeros <- sort(unique(append(refZeros, smpZeros)))
+      refSampleFilt <- refSample[-unionZeros]
+      testSampleFilt <- testSample[-unionZeros]
+
+      # calculate M and A only for filtered genes
+      refLog <- log2(refSampleFilt)
+      smpLog <- log2(testSampleFilt)
+      
+      M <- refLog - smpLog           # ref sample in numerator
+      A <- 0.5 * (refLog + smpLog)
+
+      # grab middle 40% of M and middle 90% of A
+      M_limits <- quantile(M, probs = seq(0,1,0.05))[c(7,15)]  # diagnostic
+      A_limits <- quantile(A, probs = seq(0,1,0.05))[c(2,20)]  # diagnostic
+
+      A_middle90 <- names(A[(A >= A_limits[1] & A <= A_limits[2]) == TRUE])
+      M_middle40 <- names(M[(M >= M_limits[1] & M <= M_limits[2]) == TRUE])
+
+      # grab genes names in intersection of A_middle90 and M_middle40
+      genes4norm <- dplyr::intersect(A_middle90, M_middle40)
+      
+      # #########
+      # Nk and Nr must be relative to the genes that remain.
+      # further, Ygk and Ygr need to be recalculated relative to that value
+      #########
+      # grab 2 samples on Norm Genes on Natural Scale that aren't a fraction of
+      # the total sample counts.  refSmpUnscaled is separately supplied so that
+      # this function will work with scaling test sets.
+      refSelectNat <- refSmpUnscaled[genes4norm]
+      testSelectNat <- testSmpUnscaled[genes4norm]
+
+      # subset M for normalization genes
+      M_norm <- M[genes4norm]
+
+      # calculate Nk and Nr
+      Nr <- sum(refSelectNat)
+      Nk <- sum(testSelectNat)
+
+      # calculate weights
+      RefDiff <- Nr - refSelectNat
+      TestDiff <- Nk - testSelectNat
+      RefProd <- Nr * refSelectNat
+      TestProd <- Nk * testSelectNat
+      weights <- (RefDiff/RefProd) + (TestDiff/TestProd)
+
+      # calculate Trimmed Mean scaling factor
+      TMM_log2 <- sum(M_norm * weights)/sum(weights)        # some NaN here
+      TMM <- 2^TMM_log2
+      
+      scalingFactors <- c(scalingFactors, TMM)
+   }
+   return(apply(x[[3]], 2, function(x) x/scalingFactors))
+}
+
+###############
+# normaling genes
+###############
+normalizeGenes <- function(DM, MEAN=TRUE, ROW=FALSE){
+   # this function takes a data matrix, DM, and scales the data by each row's
+   # standard deviation (if ROW=TRUE).  If ROW=FALSE, then all scaling will be
+   # performed by column.  It may also first subtract off the (row)'s mean if
+   # MEAN=TRUE.  For (rows) whose SD=0, they are set aside and added back once
+   # the normalization is finished
+   # We assume that counts have already been normalized across samples!!
+   rowcol <- ifelse(ROW==TRUE, 1, 2)          # normalization by row or column
+   rowcolInv <- ifelse(rowcol==1, 2, 1)       # inverse val needed for norm
+   SD <- apply(DM, rowcol, sd)                # calc std deviations
+   #print(c("SD",SD))
+   numSDzeros <- sum(SD==0)
+   #print(c("numSDzeros",numSDzeros))
+   # remove row / col if SD == 0
+   if(!is.na(numSDzeros) &numSDzeros != 0){              # rm row/col if SD == 0
+      zeroSD <- which(SD == 0)                # id examples with zero SD
+      DM <- ifelse(rowcol==2, list(DM[, -zeroSD]), list(DM[-zeroSD,]))[[1]]
+      SD <- SD[-zeroSD]
+   }
+
+   means <- apply(DM, rowcol, mean)
+   
+   # apply normalization with or without mean subtraction:
+   if(MEAN==FALSE){
+      DM <- t(apply(DM, rowcolInv, function(x){x / SD}))
+   }
+   else{
+      DM <- t(apply(DM, rowcolInv, function(x){(x - means) / SD}))
+   }
+
+   if(rowcol == 1){           # transpose matrix if normalization is across rows
+      DM <- t(DM)
+   }
+   
+   # add back all-zero row / column taken out earlier (if done at all)
+   if(!is.na(numSDzeros) &numSDzeros != 0){
+      if(rowcol ==1){
+         zeros <- matrix(rep(0, length(zeroSD)*dim(DM)[2]), ncol=dim(DM)[2])
+         rownames(zeros) <- names(zeroSD)
+         DM <- rbind(DM, zeros)
+      }
+      else{
+         zeros <- matrix(rep(0, length(zeroSD)*dim(DM)[1]), nrow=dim(DM)[1])
+         colnames(zeros) <- names(zeroSD)
+         DM <- cbind(DM, zeros)
+      }
+   }
+   return(DM)
+}
+
+##########
+# pre-process RSEM-Counts file
+##########
+preProcess <- function(toilSubset, TOILGENEANNOT){
+   toilGeneAnnot <- read.table(TOILGENEANNOT, header=TRUE)
+   id2gene <- setNames(as.list(as.character(toilGeneAnnot$gene)),
+                       toilGeneAnnot$id)
+   toilSubset <- toilSubset %>% tibble::rownames_to_column()
+   toilSubset <- toilSubset %>% mutate(gene=id2gene[toilSubset$rowname])
+   
+   #Next, I reorder the toilSubset data frame to group "like" samples and make the gene name the row name.
+
+   colReOrder <- grep("^GTEX", colnames(toilSubset))
+   colReOrder <- c(colReOrder, grep("11$", colnames(toilSubset)))
+   colReOrder <- c(colReOrder, grep("01$", colnames(toilSubset)))
+   tmp <- toilSubset[,colReOrder]
+   rownames(tmp) <- paste0(toilSubset$gene, "-", toilSubset$rowname)
+   toilSubset <- tmp
+   rm(tmp)
+   return(toilSubset)
+}
+```
+### Define main data structure and create methods for it
+
+```{r}
+
+## The DAT object will contain all the various data matrices, sample names,
+## and lists as the original data matrix is pre-processed before the data
+## analysis ensues.
+
+createDAT <- function(M){                # M is a data.matrix
+   # it's assumed that samples are rows and genes are columns already
+   z <- list(M_orig = M,                     # assumed log2 scale
+             M_nat = matrix(),          # M_orig on natural scale
+             M_filt = matrix(),         # after gene filtering
+             M_scaled = matrix(),       # as fraction of all counts
+             M_norm = matrix(),         # after gene normalization
+             ZEROGENES = list(),
+             outcome = list(),
+             RefSampleName = character(),
+             RefSample = matrix(),
+             RefSampleUnscaled = matrix(),
+             M_filtScaled = matrix(),   # after TMM scaling
+             seed = numeric())
+   #names(z[[2]]) <- "Nat"
+   class(z) <- "DAT"
+   return(z)
+}
+
+##########
+# pick the most representative sample, calling it RefSample
+##########
+pickRefSample <- function(x) UseMethod("pickRefSample", x)
+pickRefSample.DAT <- function(x, logged=FALSE){  # X is matrix with samples as rows
+                   # representative reference sample selected via edgeR specs
+                   # this script assumes data are on natural scale.
+   # Xnat <- if(logged==TRUE) ((2^X)-1) else X  # put in natural scale
+   N <- apply(x$M_filt, 1, sum)
+   scaledX <- apply(x$M_filt, 2, function(x) x / N)
+   thirdQuartiles <- apply(scaledX, 1, function(x) quantile(x)[4])
+   med <- median(thirdQuartiles)
+   refSampleName <- names(sort(abs(thirdQuartiles - med))[1])
+   return(list(refSampleName, scaledX))
+}
+
+##########
+# transform log2 data to natural scale
+natural <- function(x) UseMethod("natural", x)
+natural.DAT <- function(x){
+   x$M_nat <- (2^x$M_orig) - 1
+}
+
+############
+# filter Genes
+filterGenes <- function(x) UseMethod("filterGenes", x)
+filterGenes.DAT <- function(x, cutoff=0.2){ # filters calculated in log2 scale
+                                       # but applied to data in natural scale
+   ZEROEXPGENES <- which(apply(x[[1]], 2, function(x) quantile(x)[4]) < cutoff)
+   filteredGenes <- x[[2]][, -ZEROEXPGENES]  
+   return(list(ZEROEXPGENES, filteredGenes))
+}
+
+###########
+# Add Zero Genes (to test set from training Zero list)
+addZeroGenes <- function(x, ZERO){    # used when training-ZERO applied to 
+   x[[6]] <- ZERO                     # test set
+} 
+```
+
+## MAIN  
+The RSEM-Counts file originated as the full set of GTEX and TCGA breast samples, both healthy and tumors, which numbered over 1200.  I wanted an equal number of tumor and healthy samples in my training and test set, as it gave me the best chance at seeing how well my predictor performed.  
+  This document represents an updated form of an earlier document, where the name of the data were 'toil' for the non-batch-corrected data.  Here, we're working with the batch-corrected ComBat data, which are still represented with the toilTrain and toilTest variables.
+
+
+```{r}
+##############
+# SUBSTITUTE COMBAT for TOIL:
+##############
+toilSubset <- read.table(WANG_MATRIX, sep="\t", header=TRUE,
+                         stringsAsFactors = F)
+rownames(toilSubset) <- toilSubset[,1]
+toilSubset <- toilSubset[,3:ncol(toilSubset)]
+
+# COMBAT:
+# the last 8 rows are non-gene information (race, age, etc)
+# and we'll remove those now:
+tmp <- toilSubset[1:(nrow(toilSubset)-8),]
+toilSubset <- tmp
+
+### conserve full sample names for later batch inquiries:
+all398sampleNames <- gsub("\\.","-",colnames(toilSubset))
+all398sampleNames <- gsub("-07-1$","-07",all398sampleNames)
+
+
+tmp <- as.data.frame(sapply(toilSubset, as.numeric)) # throws NA error
+rownames(tmp) <- rownames(toilSubset)
+toilSubset <- tmp
+rm(tmp)
+# columns already ordered as expected
+
+```
+
+### Create Test and Training Sets
+Up to this point, all we've done is grabbed the ComBat RSEM output data and re-formatted it.  At this point it's on the natural (non-log) scale.
+
+Next:    
+1. Randomly select samples to be in the training and test sets in a way that
+keeps the ratio of healthy/tumors at about 50/50  
+2. Filter out genes with very low or zero expression across the data set.  
+3. perform edgeR normalization with a reference sample to control for depth-of-sequencing effects.  Use same reference for training and (future) test set  
+4. Center and scale each gene about its mean and std deviation, respectively.    
+5. Perform ML  
+6. Test the model on the test set.  
+
+```{r}
+toilSubsetWide <- t(toilSubset)                               # transpose matrix
+
+outcome <- c(rep(0, 199), rep(1, 199))                  # 0 = healthy, 1 = tumor
+
+# bind outcome variable on data frame for even, random partitioning
+toilSubsetWide <- data.frame(cbind(toilSubsetWide, outcome))
+set.seed(SEED)
+idxTrain <- caTools::sample.split(toilSubsetWide$outcome, SplitRatio = 0.75)
+# QA
+sum(idxTrain)/length(idxTrain)             # 75% observations in training set OK
+```
+We see that 75% of the samples ended up in the training set, as expected.
+```{r}
+#### COMBAT convert to log2(x+1) first
+tmp <- as.data.frame(sapply(toilSubsetWide,
+                                       function(x) log2(x+1)))
+rownames(tmp) <- rownames(toilSubsetWide)
+toilSubsetWide <- tmp
+rm(tmp)
+
+# create training and test predictor sets and outcome vectors:
+toilTrain <- subset(toilSubsetWide, idxTrain==TRUE)
+outcomeTrain <- subset(toilSubsetWide$outcome, idxTrain==TRUE)  # Is this used?
+
+toilTest <- subset(toilSubsetWide, idxTrain==FALSE)
+outcomeTest <- subset(toilSubsetWide$outcome, idxTrain==FALSE)
+
+# remove outcome variable from predictor matrices:
+toilTrain <- toilTrain %>% dplyr::select(-outcome)
+toilTest <- toilTest %>% dplyr::select(-outcome)
+
+# convert back to matrices:
+toilTrain <- as.matrix(toilTrain)
+toilTest <- as.matrix(toilTest)
+
+# reclaim memory
+rm(toilSubset); rm(toilSubsetWide)
+```
+Now create object starting with toilTrain data matrix
+```{r}
+train <- createDAT(toilTrain)
+train$M_nat <- natural(train)
+train$outcome <- outcomeTrain
+```
+
+### 1. Removing genes whose expression is very close to zero.  
+We know that there are about 9103 genes that are never expressed (data not shown), but there are over 25000 genes whose 75th quantile-level expression is under 2^(0.2) - 1 = 0.14 counts. We really don't want to deal with those genes in selecting a reference sample, etc.
+```{r, fig.height=8, fig.width=8, dpi=300}
+hist(apply(toilTrain, 2, function(x) quantile(x)[4]), breaks=100, main="Histogram of each gene's 75th quantile of expression.", xlab="log2(RSEM Est Counts)")
+```
+Another attempt at filtering genes whose log2(Est Counts) was less than 5 gave very unstable results at the sample-to-sample scaling factor step that corrects for unequal depth-of-sequencing between samples (not shown here).  The exact reason for this hasn't been pursued at this point.  One possibility is that samples whose depth-of-sequencing is low may have most of their genes absent for the sample-to-sample adjustment step.
+
+```{r}
+tmp <- filterGenes(train)
+train$ZEROGENES <- tmp[[1]]; train$M_filt <- tmp[[2]]
+```
+### 2. Sample-to-Sample Scaling
+I'm using the TMM algorithm to perform sample-to-sample scaling, just as what is done in edgeR.  First, one picks a reference sample (whose depth-of-sequencing is close to the median), then one scales all other samples relative to it, using weighted Trimmed Mean (TMM).
+```{r}
+tmp <- pickRefSample(train)
+train$M_scaled <- tmp[[2]]; train$RefSampleName <- tmp[[1]]
+train$M_filtScaled <- weightedTrimmedMean(train)
+```
+### 3. Gene-level Normalization
+When performing lasso regularization, it's important that the each gene is on the same scale as all other genes.  Otherwise, highly expressed genes will influence the algorithm more than other genes.  And with differential expression, we're not interested in the absolute expression level in any case.  So here, we subtract each gene's mean and divide by the gene's standard deviation so that each gene is standard-normalized.
+```{r}
+train$M_norm <- normalizeGenes(train$M_filtScaled, TRUE, FALSE)
+```
+train$M_norm is what we'll perform our machine learning on.
+
+### Logistic Regression with Lasso Regularizer on Toil Data
+I'm using a Lasso Regularizer via the *glmnet* package in order to not only reduce overfitting via regularization, but also to perform feature selection, as an increasing number of the original predictors are eliminated as the regularizing tuning parameter, lambda, become larger.
+
+The figure below illustrates this feature elimination process:
+```{r, fig.height=12, fig.width=12, dpi=300}
+set.seed(SEED2)
+fitToil.lasso <- glmnet(train$M_norm, train$outcome, family="binomial",
+                           alpha = 1)
+defaultPalette <- palette()
+plot(fitToil.lasso, xvar="lambda", label=TRUE)
+```
+Here, we see which genes have the strongest effect on the logistic regression model as the value of lambda increases from left to right.  It appears that perhaps with a few dozen genes, we might have a well-performing model.
+
+### Cross-Validating the Model to Pick the Smallest, Well-Performing Model
+I'm going to look at cross-validating the model in order to pick the simplest one that performs well.  I'll use the 1-standard-deviation rule from the model with the smallest binomial deviance.
+```{r, fig.height=8, fig.width=8, dpi=300}
+set.seed(SEED2)                                # need same seed as previous step
+cv.Toil.lasso <- cv.glmnet(train$M_norm, train$outcome
+                           , family="binomial", alpha=1) 
+plot(cv.Toil.lasso)
+```
+We can see that 48 predictors gives us a model whose deviance is within 1-standard deviation from the minimum.  
+
+### Store the Model in a Custom Structure
+```{r}
+
+coefsToil <- coef(cv.Toil.lasso, s=cv.Toil.lasso$lambda.1se)
+
+##########
+# Store model in a structure:
+storeMODEL <- function(coefsToil, train=train){
+   idx <- which(coefsToil[,1] != 0)
+   predictorFullNames <- rownames(coefsToil)[idx]
+   colIDs <- which(colnames(train$M_norm) %in% 
+                   predictorFullNames) 
+   tmpDF <- train$M_norm[,colIDs]
+   predGeneNames <- gsub("\\.ENSG.*","", predictorFullNames)
+   colnames(tmpDF) <- predGeneNames[2:length(predGeneNames)]
+
+   z <- list(
+      fullModel = coefsToil,
+      predFullNames = predictorFullNames,
+      predCoefs = coefsToil[idx],
+      predGeneNames = predGeneNames, 
+      predEntrezID = gsub(".*.(ENSG.*)\\..*$","\\1", predictorFullNames),
+      modelDF = tmpDF                                 # lacks (Intercept)
+   )
+   
+   class(z) <- "MODEL"
+   return(z)
+}
+
+LogRegModel <- storeMODEL(coefsToil, train)
+
+```
+
+```{r, include=FALSE}
+#### Creating Correlations with Outcome Vector for GSEA Analysis
+#### This section is not done yet, so I'm hiding it from the output.
+
+if(FALSE){
+  # calculate correlation coefficient pairwise between the
+  # outcome variable and each of the 42 predictors, then sort
+  predictorsCorr <- sort(apply(LogRegModel$modelDF, 2, cor,
+                               y=train$outcome,
+                               method="pearson"))
+  corrDF <- cbind(rep(1, length(predictorsCorr)), predictorsCorr)
+  # write vector to text file:
+  write.table(corrDF, "predictors42corr.txt", sep="\t") # not used
+  
+  write.table(train$outcome, "outcome.cls.txt") # had to modify format
+  
+  write.table(t(LogRegModel$modelDF), "predictorExpr.txt",
+              sep="\t")
+  
+  #### Going to output the entire training dataframe, transposed.
+  #### the outcome variable is the same as above.
+  write.table(t(train$M_norm), "training287Expr.txt", sep="\t")
+  
+  ensembl_geneID <- gsub(".*(ENSG.*.$)","\\1",rownames(t(train$M_norm))) %>%
+  {gsub("\\..*$", "", .)}
+  genes <- gsub("(.*)\\.ENSG.*","\\1",rownames(t(train$M_norm))) %>%
+    {gsub("\\.", "-", .)}
+  
+  
+  Ensmbl_HGNC_SYM_DESC <- read.csv(BIOMART_GENE_ATTR_FILE, header=TRUE, stringsAsFactors = F)
+  
+  idx_match <- which(ensembl_geneID %in% Ensmbl_HGNC_SYM_DESC$ensembl_gene_id)
+  
+  train_inverted <- t(train$M_norm)
+  train_inverted <- train_inverted[idx_match,]
+  rownames(train_inverted) <- ensembl_geneID[idx_match]
+  # sum(as.numeric(table(rownames(train_inverted))) > 1)
+  
+  write.table(train_inverted, "training287Expr.txt", sep="\t")
+  
+  predGeneAnnot <- Ensmbl_HGNC_SYM_DESC %>% dplyr::filter(ensembl_gene_id %in% ensembl_geneID)
+  predGeneAnnot$description <- gsub(" \\[.*$","",predGeneAnnot$description)
+  # join with ensembl-coeff df-abs coeff
+  rm(Ensmbl_HGNC_SYM_DESC)
+  #joinedAnnot <- inner_join(predGeneAnnot, ensembl_coefs, by=c("ensembl_gene_id" = "ensembl_geneID"))
+  # arrange by order to desc abs coeff and print select columns:
+  
+  chip_DF <- data.frame(predGeneAnnot %>% dplyr::select("ensembl_gene_id", 
+                                                       "hgnc_symbol", "description"))
+  colnames(chip_DF) <- c("Probe Set ID", "Gene Symbol", "Gene Title")
+  write.table(chip_DF, "brca.chip", sep="\t")
+}
+```
+
+### How highly correlated are the model's predictors to the output?
+I'm going to find the genes that are best correlated with the output variable (healthy/tumor) both in terms of positive correlation and negative correlation.  If a gene is a predictor in the model, then it will be elevated in the plot compared with other non-predictor genes.
+```{r, fig.height=6, fig.width=8, dpi=300}
+predictorsCorrTotal <- sort(apply(train$M_norm, 2, cor,
+                               y=train$outcome,
+                               method="pearson"))
+
+digitalPredCCoutcome <- ifelse(names(predictorsCorrTotal) %in% LogRegModel$predFullNames, 1, 0)
+
+# look at 250 genes most positively correlated and most
+# negatively correlated with outcome variable:
+bottomDigPredCCoutcome <- head(digitalPredCCoutcome, 250)
+topDigPredCCoutcome <- tail(digitalPredCCoutcome, 250)
+topCC <- data.frame(cbind(1:250, topDigPredCCoutcome))
+bottomCC <- data.frame(cbind(1:250, bottomDigPredCCoutcome))
+
+colorsOutcome <- c("#E6550D",  "#56B4E9")
+
+ggplot(topCC) +
+  geom_point(aes(x=V1, y=topDigPredCCoutcome)) +
+  ggtitle("Distribution of Predictors Among Top 250 Genes Correlated with Outcome Variable") +
+  xlab("Genes with Top Pearson's Corr Coeff with Outcome Var") + theme_bw() + ylab("A Predictor in the Model?") 
+
+```
+We see that the 6 genes most highly correlated with the outcome variable are predictors in the model, but some are not all the way to the top.  Note that all genes shown here are amongst the top 1.3% positively correlated with the outcome variable.
+
+```{r, fig.height=6, fig.width=8, dpi=300}
+ggplot(bottomCC) +
+  geom_point(aes(x=V1, y=bottomDigPredCCoutcome)) +
+  ggtitle("Distribution of Predictors Among Bottom 250 Genes Correlated with Outcome Var") +
+  xlab("Genes with Bottom Pearson's Corr Coeff with Outcome Var") + theme_bw() + ylab("A Predictor in the Model?") 
+```
+
+## Working with Test Data  
+
+### Filter and Scale Test Data.  
+#### Relying on Training Data for Zero-Filtering and Scaling of Test Data  
+In order to see how well our model actually performs, we need to test it on test data that it hasn't seen before.  First, we need to process the test data just as we did the training data, but completely separately, as this is the real-world case.  
+
+In data not shown here, I have found that sample-to-sample scaling performs well only when either  
+
+(i) it's done in the context of a large number of samples, which is a challenge for the real-world case where a single sample comes out of the clinic.  
+
+(ii) it's done relative to a single *reference sample* that was identified in the training set.  
+
+Here, I'm using case (ii) by normalizing each test sample individually against this reference sample.  Towards the bottom of the document, I perform case (i) below in order to rule out any lingering bias derived from the fact that sample scaling is performed relative to a single training sample.  
+
+Furthermore, the process of filtering out genes with very-near-zero expression levels across all samples cannot be easily defined by a single clinical sample.  Likewise, here, I'll use the "(near) zero-expressed genes" from the training set in order to perform gene-level filtering in the test set.  
+
+We start by entering the test data into a new instance of our **DAT** object.
+```{r}
+test <- createDAT(toilTest)               # add matrix to DAT object
+test$M_nat <- natural(test)                # transform from log2 to natural scale
+test$outcome <- outcomeTest                  # add outcome variable
+```
+#### 1. Filter out genes from test set using those defined in the training set
+```{r}
+                                               # transfer ZEROEXP to test object
+test$M_filt <- test$M_nat[, -train$ZEROGENES]  # subtract off genes and return 
+                                               # remainder to test object
+```
+#### 2. Sample-to-Sample Scaling of Test Set
+We're going to use the Reference Sample data from the training set here  
+```{r}
+tmp <- pickRefSample(test)                  # only doing this to get scaled data
+test$M_scaled <- tmp[[2]]; 
+test$RefSampleName <- train$RefSampleName      # RefSampleName from training set
+test$M_filtScaled <- weightedTrimmedMean(test, train, 1)     # filtered & scaled
+```
+#### 3. Gene-level Normalization on Test Set
+
+```{r}
+test$M_norm <- normalizeGenes(test$M_filtScaled, TRUE, FALSE)
+```
+#### 4. Remove Non-Predictor Genes from Filtered Test Data
+We're just keeping the 42 predictors from toilTestFiltScaled
+```{r}
+colIDs <- which(colnames(test$M_norm) %in% 
+                   LogRegModel$predFullNames[2:length(LogRegModel$predFullNames)])
+toilTestFiltScal42 <- test$M_norm[,colIDs]                  # SEPARATE FROM OBJECT
+toilTrainFiltScal42 <- train$M_norm[,colIDs]
+toilTrainFiltScal42 <- cbind(rep(1,nrow(toilTrainFiltScal42)), toilTrainFiltScal42)
+```
+#### 5. Test Set Sensitivity and Specificity
+First we add an intercept column to test predictor variables, then we perform
+matrix multiplication with the predictor coefficients and then look at the 
+prediction performance in the confusion matrix.
+```{r}
+toilTestFiltScal42 <- cbind(rep(1,nrow(toilTestFiltScal42)), toilTestFiltScal42)
+
+testPredictions_toil <- ifelse(toilTestFiltScal42 %*% LogRegModel$predCoefs > 0, 1, 0)
+table(test$outcome, testPredictions_toil)
+```
+I'm at 98% sensitivity and 100% specificity.
+
+```{r, include=F}
+# reclaim memory
+rm(toilTrain, toilTest, tmp)
+```
+
+#### Create Visual for Test Predictions
+```{r, fig.height=6, fig.width=8, dpi=300}
+generateOutcomeIndicators <- function(names){
+  # given the sample names from a list or df row/colname
+  # will generate a numeric vector for coloring points
+  # according to (1) GTEX sample, (2) TCGA normal, (3) TCGA tumor
+  gtex <- ifelse(grepl("^GTEX", names),1,0)
+  tcgaHealthy <- ifelse(grepl("^TCGA.*\\.11[AB]\\..*", names),2,0)
+  tcgaTumor <- ifelse(grepl("^TCGA.*\\.01[AB]\\..*", names),3,0)
+  return(gtex + tcgaHealthy + tcgaTumor)
+}
+generateOutcomeIndicatorsCOSMIC <- function(names){
+  # given the sample names from a list or df row/colname
+  # will generate a numeric vector for coloring points
+  # according to (1) GTEX sample, (2) TCGA normal, (3) TCGA tumor
+  gtex <- ifelse(grepl("^GTEX", names),1,0)
+  tcgaHealthy <- ifelse(grepl("^TCGA+[\\.]+[^\\.]+[\\.]+[^\\.]+[\\.]+11",
+                              names),2,0)
+  tcgaTumor <- ifelse(grepl("^TCGA+[\\.]+[^\\.]+[\\.]+[^\\.]+[\\.]+01", 
+                            names),3,0)
+  return(gtex + tcgaHealthy + tcgaTumor)
+}
+
+testPreds95 <- toilTestFiltScal42 %*% LogRegModel$predCoefs
+testPreds95Probs <- 1/(1 + exp(-1 * testPreds95))
+
+outcomeIndicators <- 
+  generateOutcomeIndicatorsCOSMIC(rownames(testPreds95Probs))
+
+testPreds95_DF <- data.frame(cbind(testPreds95Probs,  # change
+                                   outcomeIndicators))
+colnames(testPreds95_DF) <- c("probability","outcome")
+testPreds95_DF <- testPreds95_DF %>%       # sort on probability
+                    arrange(probability)
+testPreds95_DF <- cbind(index=1:nrow(testPreds95_DF), 
+                        testPreds95_DF) # add idx
+
+#colorsOutcome <- c("#E6550D",  "#56B4E9")
+colors3pal <- c("#FDAE6B", "#E6550D",  "#56B4E9")
+
+ggplot(testPreds95_DF) +
+  geom_point(aes(x=index, y=probability, color=as.factor(outcome))) +
+  ggtitle("Prediction Probabilities of Test Samples") +
+  xlab("Test Sample") + theme_bw() + ylab("Predicted Probability") +
+  scale_color_manual(name="Actual Outcome",
+                      breaks = c("1", "2", "3"),
+                      values = c(colors3pal[1], colors3pal[2],
+                                 colors3pal[3]), 
+                      labels = c("GTEX-Healthy", "TCGA-Healthy",
+                                 "TCGA-Tumor"))
+```
+
+#### Create Visual for Training Predictions
+```{r, fig.height=6, fig.width=8, dpi=300}
+trainPreds <- toilTrainFiltScal42 %*% LogRegModel$predCoefs
+trainPredsProbs <- 1/(1 + exp(-1 * trainPreds))
+outcomeIndicators <- 
+  generateOutcomeIndicatorsCOSMIC(rownames(trainPredsProbs)) #####
+
+trainPreds_DF <- data.frame(cbind(trainPredsProbs,
+                                   outcomeIndicators))
+colnames(trainPreds_DF) <- c("probability","outcome")
+trainPreds_DF <- trainPreds_DF %>%       # sort on probability
+                    arrange(probability)
+trainPreds_DF <- cbind(index=1:nrow(trainPreds_DF), trainPreds_DF) # add idx
+
+#colorsOutcome <- c("#E6550D",  "#56B4E9")
+colors3pal <- c("#FDAE6B", "#E6550D",  "#56B4E9")
+
+ggplot(trainPreds_DF) +
+  geom_point(aes(x=index, y=probability, color=as.factor(outcome))) +
+  ggtitle("Prediction Probabilities of Training Samples") +
+  xlab("Training Sample") + theme_bw() + ylab("Predicted Probability") +
+  scale_color_manual(name="Actual Outcome",
+                      breaks = c("1", "2", "3"),
+                      values = c(colors3pal[1], colors3pal[2],
+                                 colors3pal[3]), 
+                      labels = c("GTEX-Healthy", "TCGA-Healthy",
+                                 "TCGA-Tumor"))
+```
+
+## Why does the model perform so well?
+I expected that the logistic regression with a lasso regularizer would perform okay, but not nearly as well as it did.  The question is why?  Is it simply that tumors have a sufficiently different genetic programming that they can easily be partitioned from healthy samples?  
+
+### Principal Components
+To explore this idea, I'm going to look at the first 2 principal components of the overall variability of the data across all genes that weren't filtered out for having near-zero expression, and plot those out, coloring each sample according to whether or not it's healthy or a tumor.  
+```{r, fig.height=6, fig.width=8, dpi=300}
+
+plotPCs <- function(dfComponents, compIdx){
+   PC_plot <- data.frame(x=dfComponents[,compIdx[1]], y = dfComponents[,compIdx[2]], col=prognosis)
+   colors3pal <- c("#FDAE6B", "#E6550D",  "#56B4E9")
+   obj <<- ggplot(PC_plot) + 
+      geom_point(aes(x=x, y=y, color=as.factor(col)), alpha=0.6) + 
+      ggtitle("PCA Plot of Training Data Using All Filtered Predictors of Toil Training Data") +
+      xlab(paste0("PC",compIdx[1])) + ylab(paste0("PC", compIdx[2])) +
+      theme_bw() + 
+      scale_color_manual(name="Category",
+                         breaks = c("1", "2", "3"),
+                         values = c(colors3pal[1], colors3pal[2], colors3pal[3]),
+                         labels = c("Healthy-GTEX", "Healthy-TCGA", "Cancer-TCGA"));
+   return(obj)
+}
+
+
+prognosis <- c(rep(1, 69), rep(2,80), rep(3, 149))       # 1/2 = healthy, 3 = cancer
+PCs <- prcomp(train$M_norm)                               # (data already scaled)
+nComp <- 2
+dfComponents <- predict(PCs, newdata=train$M_norm)[,1:nComp]
+
+PC_plot <- data.frame(x=dfComponents[,1], y = dfComponents[,2], col=prognosis)
+colors3pal <- c("#FDAE6B", "#E6550D",  "#56B4E9")
+
+ggplot(PC_plot) + 
+   geom_point(aes(x=x, y=y, color=as.factor(col))) + 
+   ggtitle("PCA Plot of Training Data Using All Filtered Predictors of Toil Training Data") +
+   xlab("PC1") + ylab("PC2") + theme_bw() +
+   scale_color_manual(name="Category",
+                      breaks = c("1", "2", "3"),
+                      values = c(colors3pal[1], colors3pal[2], colors3pal[3]),
+                      labels = c("Healthy-GTEX", "Healthy-TCGA", "Cancer-TCGA"))
+```
+    
+We can see that even only employing the first 2 Principal Components, that: 
+
+(1) there is very good separation between the tumors (blue) and the healthy samples (light and dark orange) in the training set.  
+
+(2) We also see that the 2nd PC separates the outcome variable much better than the 1st PC.  
+
+(3) We also notice that the healthy samples from TCGA (red) and the healthy samples from GTEX (orange), which had a strong batch effect in the TOIL data, have been batch-corrected by ComBat here  [Wang, et. al. Combat paper](https://www.nature.com/articles/sdata201861).  
+
+In light of the PC plot, it perhaps should not be surprising that an off-the-shelf algorithm would perform so well, as the variability in transcription is quite significant between healthy samples and tumors.  It might be that after tissue type, healthy/tumor may impact variability in transcription more than any other factor.  
+
+### Top 5 Principal Components
+I wanted to see if any other of the top PCs were good at separating healthy samples from tumors.  
+```{r, fig.height=10, fig.width=10, dpi=300}
+plotPCs_1d <- function(dfComponents){
+   PC_plot <- data.frame(x=dfComponents$Var2, y = dfComponents$value, col=prognosis)
+   colors3pal <- c("#FDAE6B", "#E6550D",  "#56B4E9")
+   obj <- ggplot(PC_plot) + 
+      geom_jitter(aes(x=x, y=y, color=as.factor(col)), alpha=0.7) + 
+      ggtitle("Separation of Healthy / Tumors by First Few PC's") +
+      xlab("PC Number") + ylab("PC Projection") +
+      theme_bw() +
+      scale_color_manual(name="Category",
+                         breaks = c("1", "2", "3"),
+                         values = c(colors3pal[1], colors3pal[2], colors3pal[3]),
+                         labels = c("Healthy-GTEX", "Healthy-TCGA",
+                                    "Cancer-TCGA"));
+   return(obj)
+}
+
+
+nComp <- 5
+dfComponents <- predict(PCs, newdata=train$M_norm)[,1:nComp]
+
+dfCompMelt <- melt(dfComponents)
+plotPCs_1d(dfCompMelt)
+```
+We see that the 2nd and 3rd PCs give pretty good outcome variable separation.  Let's look at pairwise PC plots.
+```{r, fig.height=14, fig.width=12, dpi=300}
+ls <- list()
+pairs <- combn(5,2)
+for(idx in 1:dim(pairs)[2]){
+   pair <- pairs[,idx]
+   ls[[idx]] <- plotPCs(dfComponents, pair)                  # Add a MAIN TITLE and remove other titles
+}
+grid.arrange(ls[[1]], ls[[2]], ls[[3]], ls[[4]], ls[[5]], ls[[6]],
+             ls[[7]], ls[[8]], ls[[9]], ls[[10]], ncol=2)
+```
+It appears that PC2 and PC3 together (or PC1 and PC2) give the best separation.
+
+# Ruling Out Batch Effects and Other Potential Confounders
+
+### Duplicates in Principal Components
+In some cases, TCGA has both a tumor sample and a healthy sample from the same patient.  This isn't very common, as the number of TCGA tumor samples is nearly 10 times greater than the number of TCGA healthy samples in the database.  While both healthy and tumor samples were randomly selected here, I wanted to rule out any contribution a same-patient variable might have.
+
+Here I create the exact sample Principal Components plot as above, except that I only color the TCGA points that are from the same patient--one healthy and one tumor.
+```{r, fig.height=6, fig.width=8, dpi=300}
+modifyPrognosisByPairs <- function(prognosis, pairedSamples){
+  # Take the prognosis, which is a vector of whether actual sample outcomes
+  # are GTEX-healthy, TCGA-healthy, or TCGA-Tumor and changes the
+  # color indicator to "4" if the samples are not part of a
+  # paired set of TCGA samples
+  names(prognosis) <- gsub("\\.11[AB]\\..*$","",names(prognosis)) %>%
+                     {gsub("\\.01[AB]\\..*$", "", .)}
+  prognosis <-
+    replace(prognosis, !names(prognosis) %in% pairedSamples,4)
+  return(prognosis)
+}
+
+PCs <- prcomp(train$M_norm)                               # (data already scaled)
+nComp <- 2
+dfComponents <- predict(PCs, newdata=train$M_norm)[,1:nComp]
+
+
+prognosis <- generateOutcomeIndicators(rownames(dfComponents)) #1/2=healthy, 3=tum
+names(prognosis) <- rownames(dfComponents)
+
+#######
+# identify paired samples
+# start by shortening TCGA ID:
+sampleNamesShort <- gsub("(^TCGA.*)\\.11[AB]\\..*", 
+                         "\\1", names(prognosis)) %>%
+                         {gsub("(^TCGA.*)\\.01[AB]\\..*", "\\1", .)}
+sampleNamesShort.srt <- sort(sampleNamesShort)       # sort list
+
+# identify paired samples by adjacency in sorted list:
+pairedSamples <- c()
+for(idx in 2:length(sampleNamesShort)){
+  if(sampleNamesShort.srt[idx]==sampleNamesShort.srt[idx-1]){
+    pairedSamples <- c(pairedSamples, sampleNamesShort.srt[idx])
+  }
+}
+
+
+prognosis <-
+  modifyPrognosisByPairs(prognosis = prognosis,
+                         pairedSamples = pairedSamples)
+
+# add back original names:
+names(prognosis) <- rownames(dfComponents)
+
+
+PC_plot <- data.frame(x=dfComponents[,1], y = dfComponents[,2], col=prognosis)
+colors4pal <- c("#FDAE6B", "#E6550D",  "#56B4E9", "#bdbdbd")
+
+ggplot(PC_plot) +
+   geom_point(aes(x=x, y=y, color=as.factor(col))) +
+   ggtitle("PCA Plot of Training Data Coloring Only Paired TCGA Samples") +
+   xlab("PC1") + ylab("PC2") + theme_bw() +
+   scale_color_manual(name="Category",
+                      breaks = c("1", "2", "3", "4"),
+                      values = c(colors4pal[1], colors4pal[2],
+                                 colors4pal[3], colors4pal[4]),
+                      labels = c("", "Paired-Healthy-TCGA",
+                                 "Paired-Cancer-TCGA",
+                                 "Unpaired Sample\nor GTEX"))
+```
+I appears that the paired samples seem to be fairly evenly distributed in the PCA plot.
+
+#### Create Visual for Training Predictions -- Coloring by Paired TCGA Samples from Same Patient
+```{r, fig.height=6, fig.width=8, dpi=300}
+trainPreds <- toilTrainFiltScal42 %*% LogRegModel$predCoefs
+trainPredsProbs <- 1/(1 + exp(-1 * trainPreds))
+
+# check that the order of the samples has not changed:
+stopifnot(all(rownames(trainPreds)==names(prognosis)))
+
+# create dataframe with training probabilities and prognosis:
+trainPreds_DF <- data.frame(cbind(trainPredsProbs,prognosis))
+colnames(trainPreds_DF) <- c("probability","outcome")
+trainPreds_DF <- trainPreds_DF %>%       # sort on probability
+                    arrange(probability)
+trainPreds_DF <- cbind(index=1:nrow(trainPreds_DF), trainPreds_DF) # add idx
+
+# create color palette:
+colors4pal <- c("#FDAE6B", "#E6550D",  "#56B4E9", "#bdbdbd")
+
+ggplot(trainPreds_DF) +
+  geom_point(aes(x=index, y=probability, color=as.factor(outcome))) +
+  ggtitle("Prediction Probabilities of Training Samples, Coloring Only Paired TCGA Samples") +
+  xlab("Training Sample") + theme_bw() + ylab("Predicted Probability") +
+  scale_color_manual(name="Actual Outcome",
+                      breaks = c("1", "2", "3", "4"),
+                      values = c(colors4pal[1], colors4pal[2],
+                                 colors4pal[3], colors4pal[4]),
+                      labels = c("", "TCGA-Healthy",
+                                 "TCGA-Tumor", "Unpaired Sample\nor GTEX"))
+```
+The paired sample distribution in the probabilities also seems fairly randomly distributed as well.
+
+It thus appears that whether healthy and tumor samples are from the same patient or not isn't affecting the model.
+
+```{r, include=F}
+rm(PCs, dfCompMelt, dfComponents)
+```
+### What Genes are the Model Predictors?
+I'm going to pull the definition and symbols for the 47 predictors in the model from *biomaRt* to see what genes the predictors are.  The following table is sorted from the gene predictor that has the coefficient with the greatest (absolute) magnitude to the predictor with the least magnitude.
+```{r}
+# get predictor gene names and Ensembl IDs while removing Intercept term:
+ensembl_geneID <- LogRegModel$predEntrezID[2:length(LogRegModel$predEntrezID)]
+# manually fix a few updated IDs:
+ensembl_geneID[which(ensembl_geneID == "AL354993.1")] = "TSHZ2"
+ensembl_geneID[which(ensembl_geneID == "APOA1BP")] = "NAXE"
+
+predictorGeneNames <- LogRegModel$predGeneNames[2:length(LogRegModel$predGeneNames)]
+modelCoefs <- LogRegModel$predCoefs[2:length(LogRegModel$predCoefs)]
+ensembl_coefs <- data.frame(ensembl_geneID, modelCoefs, abs(modelCoefs)) 
+names(ensembl_coefs) <- c("ensembl_geneID", "modelCoefs", "abs.modelCoefs")
+ensembl_coefs$ensembl_geneID <- as.character(ensembl_coefs$ensembl_geneID)
+
+##############
+# we'll grab biomaRt data for these genes.  
+# The following block of code is ONLY
+# RUN ONCE, and the results are stored in a file.
+if(FALSE){                                  # rm this line the VERY first time
+listMarts()
+ensembl=useMart("ensembl")
+ensembl = useDataset("hsapiens_gene_ensembl",mart=ensembl)
+
+geneID_Name_Description <- getBM(attributes=c("ensembl_gene_id", "hgnc_id", 
+                                              "hgnc_symbol", "description"),
+   values=geneNames,
+   mart=ensembl)
+write.csv(geneID_Name_Description, file=BIOMART_GENE_ATTR_FILE)
+}
+#############
+
+Ensmbl_HGNC_SYM_DESC <- read.csv(BIOMART_GENE_ATTR_FILE, header=TRUE, stringsAsFactors = F)
+predGeneAnnot <- Ensmbl_HGNC_SYM_DESC %>% dplyr::filter(hgnc_symbol %in% ensembl_geneID) 
+
+# One remaining predictor w/o BiomaRt information
+c3orf36 <- c(NA, "ENSG00000288547","HGNC:26170", "C3ORF36", "chromosome 3 open reading frame 36")
+predGeneAnnot <- rbind(predGeneAnnot, c3orf36)
+
+
+# right-join with ensembl-coeff df-abs coeff, to not lose any predictors
+joinedAnnot <- right_join(predGeneAnnot, ensembl_coefs, by=c("hgnc_symbol" = "ensembl_geneID"))
+
+# add back C3ORF36 info:
+c3orf36 <- unlist(c(NA, "ENSG00000288547","HGNC:26170", "C3ORF36", "chromosome 3 open reading frame 36", joinedAnnot[nrow(joinedAnnot), 6:7]))
+joinedAnnot[nrow(joinedAnnot),] <- c3orf36
+# remove extra MSRA gene-to-Ensembl mapping:
+joinedAnnot <- joinedAnnot[-which(joinedAnnot$ensembl_gene_id ==
+                                    "ENSG00000285250"),]
+
+rm(Ensmbl_HGNC_SYM_DESC)
+
+# arrange by descending abs coeff and print select columns:
+joinedAnnot$description <- gsub(" \\[.*$","",joinedAnnot$description) # %>% substr(1,40)
+modelAnnot <- as_tibble(joinedAnnot %>% 
+                          arrange(desc(abs.modelCoefs)) %>%
+                          dplyr::select("ensembl_gene_id", "hgnc_symbol",
+                                        "modelCoefs", "description"))
+print(modelAnnot, n=nrow(modelAnnot))
+```
+    
+
+### Expression of the 47 Predictors Across Healthy Samples and Tumors
+```{r, fig.height=8, fig.width=12, dpi=300}
+require(reshape2)
+trainNorm42predictors <- train$M_norm[,colIDs]
+
+# update 3 gene names:
+colnames(trainNorm42predictors)[which(colnames(trainNorm42predictors) ==
+                                        "AL354993.1")] = "TSHZ2"
+colnames(trainNorm42predictors)[which(colnames(trainNorm42predictors) ==
+                                        "APOA1BP")] = "NAXE"
+colnames(trainNorm42predictors)[which(colnames(trainNorm42predictors) ==
+                                        "C3orf36")] = "C3ORF36"
+
+prognosis <- generateOutcomeIndicators(rownames(trainNorm42predictors)) 
+                                  #1/2=healthy, 3=tum
+names(prognosis) <- rownames(trainNorm42predictors)
+
+colors3pal <- c("#FDAE6B", "#E6550D",  "#56B4E9")
+predict42scaledMelt <- melt(trainNorm42predictors)
+predict42scaledMelt <- cbind(predict42scaledMelt , 
+                             colr=as.factor(rep(prognosis, ncol(trainNorm42predictors))))
+ggplot(predict42scaledMelt, aes(x=Var2, y=value)) + #, colour=colr)) +
+   geom_jitter(aes(colour=colr), size=0.5, alpha=0.75) +
+   theme_bw() +
+   ylim(-2,5) + theme(axis.text.x=element_text(angle=90)) +
+   xlab("Gene Predictors") + ylab("Number of STDEV of Expression vs Mean") +
+   scale_color_manual(name="Category",
+                         breaks = c("1", "2", "3"),
+                         values = c(colors3pal[1], colors3pal[2], colors3pal[3]),
+                         labels = c("Healthy-GTEX", "Healthy-TCGA",
+                                    "Cancer-TCGA"))
+```
+We can see that the majority of these gene predictors have either a higher level of expression in tumors (positive coefficient) or a higher level of expression in healthy tissues (negative coefficient).  2 genes seem to disciminate poorly--at least on their own.  I thought they might all have coefficients very close to zero.  However, they are mid-to-high range (RP5.1039K5.17 = 0.140 and TRBV11-2 = 0.124).  Beyond this basic point, I haven't pursued this.    
+
+### Finding Minimum, Scaled Values for 42 Predictors
+The data produced here were used for creating a powerpoint slide:
+```{r}
+apply(train$M_scaled[,colIDs], 2, function(x) min(x)/median(x))
+```
+### Using 2 genes to separate out healthy and tumor samples
+I'm going to use MIR497HG and PAFAH1B3 to create a 2D plot of the samples colored by their healthy / tumor status.  I'm choosing these two because they have large coefficients in the model and because they are inversely correlated with one another.
+```{r, fig.height=8, fig.width=8, dpi=300}
+df03 <- LogRegModel$modelDF[,c("PAFAH1B3", "NKAPL")]    # BGN
+df03 <- data.frame(cbind(df03, col=as.factor(prognosis)))
+ggplot(df03) +
+   geom_point(aes(x=PAFAH1B3,y=NKAPL,colour=as.factor(col))) +
+   theme_bw() + theme(plot.title = element_text(hjust=0.5)) +
+    #ylim(-2,5) + #theme_bw() + # (axis.text.x=element_text(angle=90)) +
+   scale_color_manual(name="Category",
+                         breaks = c("1", "2", "3"),
+                         values = c(colors3pal[1], colors3pal[2], colors3pal[3]),
+                         labels = c("Healthy-GTEX", "Healthy-TCGA", "Cancer-TCGA")) +
+  ggtitle("Training Sample Separation Using Only 2 Genes")
+```
+### Using the same 2 genes to separate out healthy and tumor samples in Test Set
+We'll repeat the above figure, but for Test data only
+```{r, fig.height=8, fig.width=8, dpi=300}
+# start by taking test set data across 42 predictors and removing Entrez part of name
+# from column names
+#colnames(toilTestFiltScal42) <- gsub("\\.ENSG.*$","",colnames(toilTestFiltScal42))
+
+paste0("PAFAH1B3.", LogRegModel$predEntrezID[which(LogRegModel$predGeneNames == "PAFAH1B3")])
+df04 <- toilTestFiltScal42[,c("PAFAH1B3", "NKAPL")]
+#df03 <- LogRegModel$modelDF[,c("PAFAH1B3", "MIR497HG")]    # BGN
+# need prognosis for test set
+prognosisTest <- c(rep(1, 20), rep(2,30), rep(3, 50))    # COMBAT
+df04 <- data.frame(cbind(df04, col=as.factor(prognosisTest)))
+ggplot(df04) +
+   geom_point(aes(x=PAFAH1B3,y=NKAPL,colour=as.factor(col))) +
+   theme_bw() + theme(plot.title = element_text(hjust=0.5)) +
+    #ylim(-2,5) + #theme_bw() + # (axis.text.x=element_text(angle=90)) +
+   scale_color_manual(name="Category",
+                         breaks = c("1", "2", "3"),
+                         values = c(colors3pal[1], colors3pal[2], colors3pal[3]),
+                         labels = c("Healthy-GTEX", "Healthy-TCGA", "Cancer-TCGA")) +
+  ggtitle("Test Sample Separation Using Only 2 Genes")
+```
+
+
+We can see that 2 genes with coefficients that are large, but of opposite sign, nearly create a separating hyperplane between the tumors and the healthy samples.  This recapitulates the earlier idea of how the gene expression programming of tumors have greatly diverged from that of healthy samples that we saw with the Principal Components plots.
+
+### Heatmap of Predictors Across Samples
+```{r, fig.height=12, fig.width=10}
+
+# create color range for expression values:
+hmcol <- colorRampPalette(c("#40004B", "#40004B", "#40004B", "#762A83", "#9970AB", 
+  "#F7F7F7", "#5AAE61", "#1B7837", "#00441B", "#00441B", "#00441B"))
+
+# coloring genes by value of model coefficient:
+geneCoefs <- data.frame(LogRegModel$predCoefs)
+rownames(geneCoefs) <- LogRegModel$predGeneNames
+colnames(geneCoefs) <- "coefs"
+geneCoefs <- geneCoefs[rownames(geneCoefs) != "(Intercept)",] # vector now
+
+# create color range for model coefficients:
+range01 <- function(x)(x-min(x))/diff(range(x))
+geneCols <- palette(brewer.pal(11,"Spectral"))[cut(range01(geneCoefs), 
+                                                   breaks=11, labels=FALSE)]
+
+# coloring samples by prognosis:
+samples <- factor(prognosis)
+sampleCols <- palette(colors3pal)[samples]
+
+# plot heatmap
+heatmap.2(as.matrix(LogRegModel$modelDF), 
+          col=hmcol, trace="none", 
+          cexRow = 0.15, 
+          cexCol = 0.5,  
+          ColSideColors = geneCols, 
+          RowSideColors = sampleCols, 
+          main = "Heatmap of Gene Predictors vs Samples")
+
+```
+The heatmap just provides another way at looking at the closeness of relationship between the different gene predictors and likewise between the different samples.  The color-coding of the columns and rows has a bug in it at the moment. 
+
+### Tissue Source Sites
+```{r}
+tssCode <- rownames(train$M_norm) %>%
+{gsub("TCGA+[\\.]+([^\\.]+).*","\\1",.)}
+# set tssCode for GTEX samples to be zero
+tssCode <- gsub("^GTEX.*","GTEX",tssCode)
+
+
+tssDF <- cbind(rownames(train$M_norm), tssCode)
+
+# create table to see differences in healthy vs tumor
+t(table(c(rep("Healthy",149),rep("Tumor",149)), tssCode))
+```
+
+This shows that there's a clear bias of tissue centers in terms of how many healthy or tumor training samples they contribute.  However, the samples are still originating from many hospitals, which makes it difficult for one or two to dominate this set.
+```{r, fig.height=6, fig.width=8, dpi=300}
+# select 8 most common tissue sites, and set others to "FEW"
+sitesToTrack <- names(sort(table(tssCode),decreasing = T)[1:8])
+tssCode <- replace(tssCode, !tssCode %in% sitesToTrack, "FEW")
+
+# convert to factors
+tssCode <- as.factor(tssCode)
+
+PCs <- prcomp(train$M_norm)                               # (data already scaled)
+nComp <- 2
+dfComponents <- predict(PCs, newdata=train$M_norm)[,1:nComp]
+
+stopifnot(all(rownames(dfComponents) == tssDF[,1]))
+
+PC_plot <- data.frame(x=dfComponents[,1], y = dfComponents[,2], col=tssCode)
+
+my_pal <- c("#e41a1c","#377eb8","#4daf4a","#984ea3","#ff7f00",
+            "#ffff33","#a65628","#f781bf","#999999")
+
+
+ggplot(PC_plot) + 
+   geom_point(aes(x=x, y=y, color=as.factor(col))) + 
+   ggtitle("PCA Plot of Training Data Colored by Tissue Source Site") +
+   xlab("PC1") + ylab("PC2") + theme_bw() +
+   theme(panel.background = element_rect(fill = '#f0f0f0')) +
+   scale_color_manual(values = my_pal,
+                      name="Tissue Source",
+                      breaks=c("A2","A7","A8","BH","D8",
+                               "E2","E9","FEW","GTEX"),
+                      labels=c("Walter Reed", "Christiana Health",
+                               "Indivumed", "U Pittsburg",
+                               "Greater Poland CC", "Roswell Park",
+                               "Asterand", "Miscellaneous", "GTEX"))
+```
+We see that healthy samples (bottom half) are dominated by GTEX and BH (Univ Pittsburg BRCA Study).  However, there are BH samples in the tumor samples on top as well.  Most other biases favor sites that only donated tumor samples, including the catch-all "FEW" category that captures all sites having donated < 10 samples total to my training set.
+
+The question is how these biases affect predictions.
+
+#### Effect of Tissue Source Site on Prediction Probabilities
+```{r, fig.height=8, fig.width=10, dpi=300}
+
+trainPreds <- toilTrainFiltScal42 %*% LogRegModel$predCoefs
+trainPredsProbs <- 1/(1 + exp(-1 * trainPreds))
+stopifnot(all(names(trainPredsProbs)==rownames(train$M_norm)))
+
+
+# outcome variable = the tissue source sites "tssCode"
+trainPreds_DF <- data.frame(cbind(trainPredsProbs,
+                                   tssCode))
+colnames(trainPreds_DF) <- c("probability","outcome")
+
+
+# sort on probability and add idx
+trainPreds_DF <- trainPreds_DF %>%       
+                    arrange(probability)
+trainPreds_DF <- cbind(index=1:nrow(trainPreds_DF), trainPreds_DF) 
+
+
+# colors for data:
+my_pal <- c("#e41a1c","#377eb8","#4daf4a","#984ea3","#ff7f00",
+            "#ffff33","#a65628","#f781bf","#999999")
+
+ggplot(trainPreds_DF) +
+  geom_point(aes(x=index, y=probability, color=as.factor(outcome))) +
+  ggtitle("Prediction Probabilities of Training Samples Colored by Tissue Source Site") +
+  xlab("Training Sample") + theme_bw() + ylab("Predicted Probability") +
+  scale_color_manual(values = my_pal,
+                      name="Tissue Source",
+                      breaks=c(1,2,3,4,5,6,7,8,9),
+                               #"E2","E9","FEW","GTEX"),
+                      labels=c("Walter Reed", "Christiana Health",
+                               "Indivumed", "U Pittsburg",
+                               "Greater Poland CC", "Roswell Park",
+                               "Asterand", "Miscellaneous", "GTEX"))
+```
+We can see that while U Pittsburg has many more healthy samples than tumors, the model correctly discriminates between U Pittsburg samples by whether they are actually healthy (53 samples) or tumor (22 samples), which is enough to rule out the Tissue Source Site for being a batch effect for a model with 98%+ accuracy.
+
+### Looking at Diagnosis Date as Proxy for Sample Collection Date
+```{r, fig.height=6, fig.width=8, dpi=300}
+
+# grab attributes file and pull out tcga id and year_of_diagnosis:
+TCGA_Attr_Full <- read.csv(ATTR_FILE, header=TRUE, sep="\t", 
+                            stringsAsFactors = FALSE)
+TCGA_ID_Date <- TCGA_Attr_Full %>% dplyr::select(tcgaID, year_of_diagnosis)
+rm(TCGA_Attr_Full)
+
+# need to pair these with rownames(train$M_norm)
+gtexIDs <- rownames(train$M_norm)[grepl('^GTEX',rownames(train$M_norm))]
+tcgaIDs <- rownames(train$M_norm)[grepl('^TCGA',rownames(train$M_norm))]
+tcgaIDs_cleaned <- gsub("[.][^.]+[.][^.]+[.][^.]+$","",tcgaIDs)
+tcgaIDs_cleaned <- gsub("\\.41R","",tcgaIDs_cleaned)
+
+CombatTrainSamples <- c(gtexIDs, tcgaIDs_cleaned)
+write.csv(CombatTrainSamples, "CombatTrainSamples.txt", sep="\t",
+          row.names = F)
+
+# clean up TCGA_ID_Date:
+TCGA_Date_Clean <- data.frame(tcgaID="TCGA.Null",
+                              year_of_diagnosis=1999)
+
+for(row in 1:nrow(TCGA_ID_Date)){
+  for(tcgaID in (unlist(strsplit(TCGA_ID_Date$tcgaID[row],";")))){
+    tcgaID <- gsub("-", ".",tcgaID)    # change - to .
+    year_of_diagnosis = TCGA_ID_Date$year_of_diagnosis[row]
+    #print(dim(cbind(id, year_of_diagnosis)))
+    TCGA_Date_Clean <- rbind(TCGA_Date_Clean,
+        cbind(tcgaID, year_of_diagnosis))
+  }
+}
+
+# fix data types:
+TCGA_Date_Clean$tcgaID <- as.character(TCGA_Date_Clean$tcgaID)
+TCGA_Date_Clean$year_of_diagnosis <- 
+  as.integer(TCGA_Date_Clean$year_of_diagnosis)
+
+# now for each element in tcgaIDs_cleaned, grab year from TCGA_Date_Clean
+years <- integer()
+for(id in tcgaIDs_cleaned){
+  year <- 
+    TCGA_Date_Clean$year_of_diagnosis[which(TCGA_Date_Clean$tcgaID %in% id)]
+  years <- c(years, year)
+}
+tumHealthy <- ifelse(grepl("01[AB]$",tcgaIDs_cleaned),"Tumor", "Healthy")
+tumHealthYearDF <- data.frame(cbind(tumHealthy, as.integer(years)))
+
+ggplot(tumHealthYearDF, aes(x=V2)) +
+  stat_count(aes(fill=tumHealthy)) +
+  ggtitle("Year of Patient Diagnosis for Training Samples") +
+  xlab("Year of Patient Diagnosis") +
+  scale_fill_manual(name="Category",
+                     breaks = c("Healthy", "Tumor"),
+                     values=c("#E6550D",  "#56B4E9"),
+                     labels = c("Healthy-TCGA", "Cancer-TCGA"))
+```
+```{r, fig.height=6, fig.width=8, dpi=300}
+# add gtex dates on front end:
+years <- c(rep(NA,length(gtexIDs)), years)  # or NA better?
+
+#####################
+# now do the PCA plotting:
+PCs <- prcomp(train$M_norm)                               # (data already scaled)
+nComp <- 2
+dfComponents <- predict(PCs, newdata=train$M_norm)[,1:nComp]
+
+# QA sample name consistency:
+stopifnot(all(rownames(dfComponents) == tssDF[,1]))
+
+# make DF for PCA's
+PC_plot <- data.frame(x=dfComponents[,1], y = dfComponents[,2], col=years)
+
+# color palette:
+my_pal <- c("#e41a1c","#377eb8","#4daf4a","#984ea3","#ff7f00",
+            "#ffff33","#a65628","#f781bf","#999999")
+
+ggplot(PC_plot) + 
+   geom_point(aes(x=x, y=y, color=as.factor(col))) + 
+   ggtitle("PCA Plot of Training Data Colored by Year of Diagnosis") +
+   xlab("PC1") + ylab("PC2") + theme_bw() +
+   theme(panel.background = element_rect(fill = '#f0f0f0')) 
+
+```
+
+#### Effect of Collection Data on Prediction Probabilities
+```{r, fig.height=8, fig.width=10, dpi=300}
+
+trainPreds <- toilTrainFiltScal42 %*% LogRegModel$predCoefs
+trainPredsProbs <- 1/(1 + exp(-1 * trainPreds))
+
+stopifnot(all(names(trainPredsProbs)==rownames(train$M_norm)))
+
+# outcome variable here will be the year of sample collection
+trainPreds_DF <- data.frame(cbind(trainPredsProbs,
+                                   years))
+colnames(trainPreds_DF) <- c("probability","outcome")
+
+
+# sort on probability and add index:
+trainPreds_DF <- trainPreds_DF %>%       
+                    arrange(probability)
+trainPreds_DF <- cbind(index=1:nrow(trainPreds_DF), trainPreds_DF)
+
+
+# data colors:
+my_pal <- c("#e41a1c","#377eb8","#4daf4a","#984ea3","#ff7f00",
+            "#ffff33","#a65628","#f781bf","#999999")
+
+ggplot(trainPreds_DF) +
+  geom_point(aes(x=index, y=probability, color=as.factor(outcome))) +
+  ggtitle("Prediction Probabilities of Training Samples Colored by Year of Diagnosis") +
+  xlab("Training Sample") + theme_bw() + ylab("Predicted Probability") +
+  theme(panel.background = element_rect(fill = '#f0f0f0')) 
+
+```
+
+### Sequencing Center for all TCGA Samples
+The final portion of each TCGA ID tells us what sequencing center was used in creating the samples.  An example would be "TCGA.A7.A3J0.01A.11R.A213.07".  So the sequencing center code is "07".  According to https://gdc.cancer.gov/resources-tcga-users/tcga-code-tables/center-codes, 07 refers to the University of North Carolina.  In fact, we can see that it's the center used for all TCGA samples in this training set:
+```{r}
+tcgaSampleNames <- all398sampleNames[grep("^TCGA", all398sampleNames)]
+print(paste("The percentage of TCGA samples that were sequenced at the University of North Carolina sequencing center is",
+(sum(grepl("-07$", tcgaSampleNames))/length(tcgaSampleNames))*100, "%"))
+```
+We can see that for all healthy samples: TCGA.xx.xxxx.11(A/B) and for all tumor samples TCGA.xx.xxxx.01(A/B) that they all end in "07".  Therefore there is no sequencing center variability that, on its own, could give rise to a batch effect.
+
+#### Potential TCGA Plate Number Batch Effect
+The TCGA IDs have a plate identifier embedded in them.  It refers to how samples are stored at the facility.  I'd like to eliminate that as a batch effect.
+```{r, fig.height=6, fig.width=8, dpi=300}
+# first I'll break healthy and tumor into 2 groups:
+tumorSampleNames <- all398sampleNames[grep("-01[AB]-", 
+                                           all398sampleNames)]
+healthyTCGASampleNames <- all398sampleNames[grep("-11[AB]-", 
+                                                 all398sampleNames)]
+healthyTCGASampleNames <- gsub("-07-1$","-07", 
+                               healthyTCGASampleNames)
+
+# I'm going to take a quick look at plate number distribution:
+tumorPlateNumber <- gsub(".*.R-([A-Z0-9]+)-07$", "\\1",
+                                   tumorSampleNames)
+healthyTCGAPlateNumber <- gsub(".*.R-([A-Z0-9]+)-07$", "\\1",
+                                   healthyTCGASampleNames)
+
+plateIDs <- c(tumorPlateNumber, healthyTCGAPlateNumber)
+classes <- c(rep("Tumor", length(tumorPlateNumber)), 
+             rep("Healthy", length(healthyTCGAPlateNumber)))
+
+plateDF <- data.frame(cbind(plateIDs, classes))
+
+ggplot(plateDF, aes(x=as.factor(plateIDs))) +
+  stat_count(aes(fill=classes)) +
+  ggtitle("Distribution of TCGA Samples by Plate Number") +
+  xlab("TCGA Plate Number") + 
+  theme(axis.text.x=element_text(angle=90)) +
+  scale_fill_manual(name="Category",
+                     breaks = c("Healthy", "Tumor"),
+                     values=c("#E6550D",  "#56B4E9"),
+                     labels = c("Healthy-TCGA", "Cancer-TCGA"))
+
+```
+We can see that many TCGA plate numbers are shared between healthy and tumor samples.  For a model with greater than 98% accuracy, plate number can't be a confounder.  However, next, we'd like to look at the actual sequencing date.
+
+#### Eliminating Sequencing Date as a Batch Effect Confounder
+At the moment, querying for the sequencing date is done manually, and will be automated in the future.  Because of this manual process, I took a random sampling of 20 healthy TCGA samples and 20 tumor TCGA samples (training and test are mixed here).  
+```{r}
+# Let's put together a dataframe that has the original IDs along with the 
+# plate number.
+tcgaSampleNames <- c(tumorSampleNames, healthyTCGASampleNames)
+tcgaNamesPlatesDF <- data.frame(cbind(tcgaSampleNames, plateIDs, classes))
+
+# I think I'll take a random sampling of 20 tumor samples and 20 healthy samples and make a figure out of their dates.
+set.seed(839298)
+idx <- sample(which(tcgaNamesPlatesDF$classes=="Tumor"),20,replace = F)
+tumorSample <- tcgaNamesPlatesDF[idx,]
+idx <- sample(which(tcgaNamesPlatesDF$classes=="Healthy"),20,replace = F)
+healthySample <- tcgaNamesPlatesDF[idx,]
+```
+The tumorSample and healthySample dataframes were manually queried on the command-line for the dates.  Multiple dates came back for the 40 samples in question.  I picked the most representative (common) date for each sample.  Here, we import the output of that file and create a graph showing the sequencing date variable:
+```{r, fig.height=6, fig.width=8, dpi=300}
+SeqDatesDF <- read.table(SEQUENCING_DATE_FILE, 
+                         header=T, stringsAsFactors = F)
+
+ggplot(SeqDatesDF, aes(x=as.Date(Most_Common_Date), y=as.factor(classes))) +
+  geom_jitter(aes(colour=as.factor(classes)),size=0.5, height=0.2) +
+  ggtitle("Sequencing Date for Random Sampling of TCGA Samples") +
+  xlab("Date of Sequencing") + ylab("Tumor Status") +
+  theme_bw() + xlim(c(as.Date("2010-01-01"), as.Date("2014-01-01"))) +
+  scale_colour_manual(name="Category",
+                    breaks = c("Healthy", "Tumor"),
+                    values=c("#E6550D",  "#56B4E9"),
+                    labels = c("Healthy-TCGA", "Cancer-TCGA"))
+
+```
+```{r, include=FALSE}
+## Testing the Model Sensitivity on More RNASeq Samples
+
+# When the initial dataset of 382 samples were obtained from GTEX and TCGA, there were far more tumors available than healthy samples.  All healthy samples were part of these 382 samples which were then split into 287 training samples and 95 test samples.
+# 
+# However, there remain many more RNA-Seq samples from TCGA that have not yet been used in this study.  I'd like to see how the model performs on them, and since there are so many, I thought that I'd first break them into their stage of cancer (I - IV) and test them in those groups.  Since all of these samples are tumors, we'll further be measuring the sensitivity of the model.  But since there are no healthy samples, we'll be unable to measure the specificity.
+# 
+# Another point that I'll bring up is that in creating the set of 382 from an initial group of 398 samples, there was a filtering step where samples that had a low RNA quality score were eliminated from the set.
+# 
+# In the dataset we'll now look at, I'm not performing any filtering step.
+# 
+# The code is a bit extensive, partly because it hasn't been cleaned up with common functions.  It's not shown in the .html nor .md versions of this file.  It can be seen in the .Rmd version.
+```
+
+```{r, include=FALSE}
+# wangMatrix <- read.table(WANG_MATRIX, header=TRUE)       # rownames okay now
+# wangSelectedSamples <- colnames(wangMatrix)
+# wangTCGAsamples <- wangSelectedSamples[grep("^TCGA", wangSelectedSamples)] %>%
+#    {gsub("\\.", "-", .)} %>%
+#    {gsub("([TCGA]-[^-]+[-][^-]+[-][^-]+)[-].*", "\\1", .)} %>%
+#    {gsub("[ABCZ]$", "", .)}
+# 
+# 
+# # read in TCGA attribute file:
+# TCGA_Attr_Full <- read.csv(TCGA_ATTR_FILE, header=TRUE, sep="\t",
+#                            stringsAsFactors = FALSE)
+# TCGA_ID_Stage <- TCGA_Attr_Full %>% dplyr::select(tcgaID, tumor_stage)
+# rm(TCGA_Attr_Full, wangMatrix)
+# 
+# # grab all TCGA IDs already used--already created as wangTCGAsamples
+# # there's also a toilSampleNames object as well.  # NOTE THAT FINAL LETTER STRIPPED OFF
+# 
+# # initialize six tumor stage dataframes
+# stageOne <- data.frame(tcgaID=character(), stage=character(), novel=character())
+# stageTwo <- data.frame(tcgaID=character(), stage=character(), novel=character())
+# stageThree <- data.frame(tcgaID=character(), stage=character(), novel=character())
+# stageFour <- data.frame(tcgaID=character(), stage=character(), novel=character())
+# stageZero <- data.frame(tcgaID=character(), stage=character(), novel=character())
+# stageHealthy <- data.frame(tcgaID=character(), stage=character())
+# stageUnknown <- data.frame(tcgaID=character(), stage=character())
+# 
+# ######################################
+# # function for appending to dataframes
+# appendDFtumor <- function(id, stage){  # appends non-healthy smpl/df
+#    if(any(grepl(gsub("[ABZ]$","",id), wangTCGAsamples))){
+#       vect <- cbind(id, stage, novel="already_used")}  # need to eval df
+#    else{
+#       vect <- cbind(id, stage, novel="unused")}
+#    return(vect)
+# }
+# #######################################
+# #######################################
+# # break apart tcgaIDs, and classify by type (converted to factor)
+# processTumorStage <- function(df){  #expects  1 row of 2 col df:
+#                                     # tcga_ID and tumor_stage
+# 
+#    stage = unlist(df[2])
+#    for(id in unlist(strsplit(df[1], ";"))){
+#       if(grepl("10[ABZ]$", id) | grepl("11[ABZ]", id)){  # filter our healthy samples  --- BACKWARDS 01 is cancer!
+#          #stageHealthy <<- rbind(stageHealthy, cbind(id, "healthy"))
+#          stageHealthy <<- rbind(stageHealthy, appendDFtumor(id, stage="healthy"))
+#       }
+#       else{
+#          if(grepl("stage i[ab]", stage) | grepl("stage i$", stage)){
+#             stageOne <<- rbind(stageOne, appendDFtumor(id, stage))}
+#          else if(grepl("stage ii[ab]", stage) | grepl("stage ii$", stage)){
+#             stageTwo <<- rbind(stageTwo, appendDFtumor(id, stage))}
+#          else if(grepl("stage iii[abc]", stage) | grepl("stage iii$", stage)){
+#             stageThree <<- rbind(stageThree, appendDFtumor(id, stage))}
+#          else if(grepl("stage iv[ab]", stage) | grepl("stage iv$", stage)){
+#             stageFour <<- rbind(stageFour, appendDFtumor(id, stage))}
+#          else if(grepl("stage x", stage) | grepl("not reported", stage)){
+#             stageUnknown <<- rbind(stageUnknown, cbind(id, stage))}
+#          else{
+#              # print(c(id, stage, "missing class")) # all accounted for
+#          }
+#       }
+#    }
+# }
+# ########################################
+# 
+# 
+# apply(TCGA_ID_Stage, 1, processTumorStage)
+# 
+# # some code determining if there is more than 1 sample per class from 1 individual
+# 
+# ########################################
+# # The following segment of code was only run once (it takes about 20 minutes).
+# # The data were saved as 5 smaller files below.
+# ########################################
+# while(FALSE){
+#    toilData <- read.table(FULL_TOIL_DATA, header=TRUE, stringsAsFactors = FALSE)
+#    toilSampleNames <- as.character(colnames(toilData))
+# 
+#    stageOneIDs <- (stageOne %>% dplyr::filter(novel=="unused") %>% dplyr::select(id) %>%
+#                    convertColsToList())[[1]] %>% {gsub("[ABZC]$", "", .)} %>%
+#       {gsub("-", "\\.", .)} %>% unique()   # 153 long
+# 
+#    stageTwoIDs <- (stageTwo %>% dplyr::filter(novel=="unused") %>% dplyr::select(id) %>%
+#                    convertColsToList())[[1]] %>% {gsub("[ABZC]$", "", .)} %>%
+#       {gsub("-", "\\.", .)} %>% unique()   # 523 long
+# 
+#    stageThreeIDs <- (stageThree %>% dplyr::filter(novel=="unused") %>% dplyr::select(id) %>%
+#                    convertColsToList())[[1]] %>% {gsub("[ABZC]$", "", .)} %>%
+#       {gsub("-", "\\.", .)} %>% unique()   # 203 long
+# 
+#    stageFourIDs <- (stageFour %>% dplyr::filter(novel=="unused") %>% dplyr::select(id) %>%
+#                    convertColsToList())[[1]] %>% {gsub("[ABZC]$", "", .)} %>%
+#       {gsub("-", "\\.", .)} %>% unique()   # 20 long
+# 
+#    stageHealthyIDs <- (stageHealthy %>% dplyr::filter(novel=="unused") %>% dplyr::select(id) %>%
+#                    convertColsToList())[[1]] %>% {gsub("[ABZC]$", "", .)} %>%
+#       {gsub("-", "\\.", .)} %>% unique()   # 1052 long ??????
+# 
+# 
+#    ### Now grab the actual data, now that we've separated tumors by stage and filtered out
+#    ### training samples and early-used test samples:
+#    ### I'm also transposing the dataframes here as well:
+#    stageOneDF <- toilData[,which(toilSampleNames %in% stageOneIDs)]          # 147 smpls
+#    stageTwoDF <- toilData[,which(toilSampleNames %in% stageTwoIDs)]          # 514
+#    stageThreeDF <- toilData[,which(toilSampleNames %in% stageThreeIDs)]      # 203
+#    stageFourDF <- toilData[,which(toilSampleNames %in% stageFourIDs)]        #  20
+#    stageHealthyDF <- toilData[,which(toilSampleNames %in% stageHealthyIDs)]  #   4 --most not in TOIL
+# 
+#    ### add gene names, as done above:
+#    rownames(stageOneDF) <- colnames(train$M_orig)
+#    rownames(stageTwoDF) <- colnames(train$M_orig)
+#    rownames(stageThreeDF) <- colnames(train$M_orig)
+#    rownames(stageFourDF) <- colnames(train$M_orig)
+#    rownames(stageHealthyDF) <- colnames(train$M_orig)
+# 
+#    ##################################################################
+#    # now write these DF to files for future use!
+#    # I'M STORING THESE IN TRANSPOSED FORM, AS READING TALL MATRICES IS
+#    # MUCH FASTER THAN READING WIDE MATRICES ON MACOS
+#    ##################################################################
+#    write.table(stageOneDF, "stageOneTest.txt", sep="\t", row.names = TRUE)
+#    write.table(stageTwoDF, "stageTwoTest.txt", sep="\t", row.names = TRUE)
+#    write.table(stageThreeDF, "stageThreeTest.txt", sep="\t", row.names = TRUE)
+#    write.table(stageFourDF, "stageFourTest.txt", sep="\t", row.names = TRUE)
+#    write.table(stageHealthyDF, "stageHealthyTest.txt", sep="\t", row.names = TRUE)
+# }
+# ################################################## comment out lines of code above.
+# # Normal execution of code resumes here:
+# # Note that these dataframes are being transposed #
+# stageOneDF <- t(read.csv("stageOneTest.txt", header=TRUE, sep="\t",
+#            stringsAsFactors = FALSE))
+# stageTwoDF <- t(read.csv("stageTwoTest.txt", header=TRUE, sep="\t",
+#            stringsAsFactors = FALSE))
+# stageThreeDF <- t(read.csv("stageThreeTest.txt", header=TRUE, sep="\t",
+#            stringsAsFactors = FALSE))
+# stageFourDF <- t(read.csv("stageFourTest.txt", header=TRUE, sep="\t",
+#            stringsAsFactors = FALSE))
+# stageHealthyDF <- t(read.csv("stageHealthyTest.txt", header=TRUE, sep="\t",
+#            stringsAsFactors = FALSE))
+# 
+# 
+# # Next: filter, normalize, etc. Perform all-test groups separately from one another
+# # and separately from training set.
+# 
+# # create outcome vectors for each test dataset
+# stageOneOutcome <- rep(1,dim(stageOneDF)[1])
+# stageTwoOutcome <- rep(1,dim(stageTwoDF)[1])
+# stageThreeOutcome <- rep(1,dim(stageThreeDF)[1])
+# stageFourOutcome <- rep(1,dim(stageFourDF)[1])
+# stageHealthyOutcome <- rep(0,dim(stageHealthyDF)[1])
+```
+```{r, include=FALSE}
+# ## 1. Process the 4 datasets (stageOne, stageTwo, stageThree, stageFour)
+# I'll process these datasets the same way as I did above.  I'm still using the ZEROGENES that were defined by the training data for gene filtering.  And I'm still using the Reference Sample defined in the training set for calculating the sample-to-sample scaling factors.
+# #### A function for processing dataframes and making predictions
+```
+```{r, include=FALSE}
+# filterScaleNormalizePredict <- function(df, REF_MEANS, REF_SDS,
+#                                         train, LogRegModel, useRef=0){
+#    # if useRef==0, then geneNormalization done within df
+#    # if useRef==1, then geneNormalization done with parameters from train
+#    # (REF_MEANS & REF_SDS)
+# 
+#    # 1b. convert to natural scale:
+#    df$M_nat <- natural(df)
+# 
+#    # 2. subtract out ZEROEXPGENES, as defined in training set
+#    df$M_filt <- df$M_nat[,-train$ZEROGENES]
+# 
+#    # 2b. represent intensities as fraction of all signals in each sample
+#    N <- apply(df$M_filt, 1, sum)
+#    df$M_scaled <- apply(df$M_filt, 2, function(x) x / N)
+# 
+#    df$RefSampleName <- train$RefSampleName             # transfer from train set
+# 
+#    # 3. Calc scaling factor, relative to REFSAMPLE (in train) and scale data
+#    df$M_filtScaled <- data.frame(weightedTrimmedMean(df, train, TRUE))
+# 
+#    # 4. Remove Non-Predictor Genes from Filtered Test Data, REF_MEANS, REF_SDS
+#    coefsFullNames <- LogRegModel$predFullNames[2:length(LogRegModel$predFullNames)]
+#    dfFiltScal42 <- df$M_filtScaled %>% dplyr::select(coefsFullNames)
+# 
+#    # 5. scale each gene by its stdev and offset by its mean.  Add intercept
+#    if(useRef == 1){
+#       REF_MEANS_Predictors <- REF_MEANS[coefsFullNames]
+#       REF_SDS_Predictors <- REF_SDS[coefsFullNames]
+#       df$M_norm <- t(apply(dfFiltScal42, 1, function(x){
+#          (x - REF_MEANS_Predictors)/REF_SDS_Predictors}))}
+#    if(useRef == 0){
+#       SMP_MEANS <- apply(df$M_filtScaled, 2, mean)
+#       SMP_SDS <- apply(df$M_filtScaled, 2, sd)
+#       SMP_MEANS_Predictors <- SMP_MEANS[coefsFullNames]
+#       SMP_SDS_Predictors <- SMP_SDS[coefsFullNames]
+#       df$M_norm <- t(apply(dfFiltScal42, 1, function(x){
+#          (x - SMP_MEANS_Predictors)/SMP_SDS_Predictors}))}
+# 
+#    dfFiltScaledSD <- cbind(rep(1,nrow(df$M_norm)), df$M_norm)
+# 
+#    # 6. perform predictions
+#    testPredictions <- ifelse(dfFiltScaledSD %*% LogRegModel$predCoefs > 0, 1, 0)
+#    return(testPredictions)
+# }
+```
+```{r, include=FALSE}
+# ## Other TCGA Sample Sensitivity
+# METHODOLOGY: Processing samples as above, with:
+# 1. The filtering of genes defined by the training set
+# 
+# 2. The sample-to-sample scaling factors done relative to a Reference Sample defined
+# in the training set
+# 
+# 3. The centering and scaling of each gene about its mean and standard deviation,
+# respectively, within the dataset at hand.
+# 
+# #### Cancer Stage I Predictions
+```
+```{r, include=FALSE}
+# # stage 1 only
+# stageOne <- createDAT(stageOneDF)
+# rm(stageOneDF)
+# stage1Preds <- filterScaleNormalizePredict(stageOne, NULL, NULL,
+#                                            train, LogRegModel, FALSE)
+# table(stageOneOutcome, stage1Preds)
+```
+```{r, include=FALSE}
+#### Cancer Stage II Predictions
+```
+```{r, include=FALSE}
+# # stage 2 only
+# stageTwo <- createDAT(stageTwoDF)
+# rm(stageTwoDF)
+# stage2Preds <- filterScaleNormalizePredict(stageTwo, NULL, NULL,
+#                                            train, LogRegModel, FALSE)
+# table(stageTwoOutcome, stage2Preds)
+```
+```{r, include=FALSE}
+#### Cancer Stage III Predictions
+```
+```{r, include=FALSE}
+# stage 3 only
+# stageThree <- createDAT(stageThreeDF)
+# rm(stageThreeDF)
+# stage3Preds <- filterScaleNormalizePredict(stageThree, NULL, NULL,
+#                                            train, LogRegModel, FALSE)
+# table(stageThreeOutcome, stage3Preds)
+```
+```{r, include=FALSE}
+#### Cancer Stage IV Predictions
+```
+```{r, include=FALSE}
+# stage 4 only
+# stageFour <- createDAT(stageFourDF)
+# rm(stageFourDF)
+# stage4Preds <- filterScaleNormalizePredict(stageFour, NULL, NULL,
+#                                            train, LogRegModel, FALSE)
+# table(stageFourOutcome, stage4Preds)
+```
+```{r, include=FALSE}
+# ## We are getting terrible performance!  Why?
+# It has to do with the centering and scaling of each gene about its mean and standard deviation.
+# Let's look at a figure, where for the first 10 gene predictors (out of a total of 42), we create a boxplot
+# for
+# (a) all 287 training samples (red)
+# (b) just the 139 healthy training samples (green)
+# (c) just the 148 training tumors (blue)
+```
+```{r, include=FALSE}
+# # {r, fig.height=8, fig.width=8, dpi=300}
+# numCols <-10
+# fullTrainPredictors <- LogRegModel$modelDF[,1:numCols]
+# healthyTrainPredictors <- fullTrainPredictors[1:139,]
+# tumorTrainPredictors <- fullTrainPredictors[140:287,]
+# 
+# trainPredictorsMelt <- cbind(rbind(melt(fullTrainPredictors), melt(healthyTrainPredictors),
+#                              melt(tumorTrainPredictors)), class=c(rep("All", numCols*287),
+#                                                             rep("Healthy", numCols*139),
+#                                                             rep("Tumor", numCols*148)))
+# ggplot(trainPredictorsMelt, aes(x=Var2, y=value, fill=class)) + geom_boxplot() +
+#    ylim(-2,2) + theme_bw() +
+#    xlab("Gene Predictors") + ylab("Number of STDEV of Expression vs Mean")
+```
+```{r, include=FALSE}
+# This figure illustrates the problem we're having quite well.
+# The gene-level centering and scaling we just performed on the Stage I-IV TCGA tumors was done based ONLY on the tumor data for each gene (blue boxplot).  However, the training model was created based on the gene-level normalization from the red boxplot.
+# 
+# Looking at the gene on the left (FAM89B), we see that the mean across healthy sample and tumors is about -0.25, but amongst only the tumors, the mean is about +0.45.  What that means is that there will be many samples whose FAM89B level lies between -0.25 and +0.45.  In these cases, they would have had POSITIVE post-normalization values if all samples had been used, but NEGATIVE values if just the tumor samples had been used.  In these cases, the data would have been working counter to the model due to erroneous gene-level centering and scaling.
+# 
+# Looking at the figure, we see that this issue is relevant for many genes.
+# 
+# If this is true, then it should be the case that if we take the mean and standard deviation for all 42 genes in the training set (red boxplot) and apply these numbers to the gene-level centering and scaling of the Stage I-IV Predictions, our model performance should greatly improve.
+# 
+# ### Testing the Gene-Level Centering and Scaling Hypothesis
+# We start out by calculating the gene-level means and standard deviations for all genes *in the training set*.  We then apply these values for the Stage I-IV test sets
+```
+```{r, include=FALSE}
+# REF_MEANS <- apply(train$M_filtScaled, 2, mean)
+# REF_SDS <- apply(train$M_filtScaled, 2, sd)
+```
+
+```{r, include=FALSE}
+# # stage 1 only
+# #stageOne <- createDAT(stageOneDF)
+# stage1Preds <- filterScaleNormalizePredict(stageOne, REF_MEANS, REF_SDS,
+#                                            train, LogRegModel, TRUE)
+# table(stageOneOutcome, stage1Preds)
+```
+```{r, include=FALSE}
+# # stage 2 only
+# #stageTwo <- createDAT(stageTwoDF)
+# stage2Preds <- filterScaleNormalizePredict(stageTwo, REF_MEANS, REF_SDS,
+#                                            train, LogRegModel, TRUE)
+# table(stageTwoOutcome, stage2Preds)
+```
+
+```{r, include=FALSE}
+# # stage 3 only
+# #stageThree <- createDAT(stageThreeDF)
+# stage3Preds <- filterScaleNormalizePredict(stageThree, REF_MEANS, REF_SDS,
+#                                            train, LogRegModel, TRUE)
+# table(stageThreeOutcome, stage3Preds)
+```
+```{r, include=FALSE}
+# # stage 4 only
+# #stageFour <- createDAT(stageFourDF)
+# stage4Preds <- filterScaleNormalizePredict(stageFour, REF_MEANS, REF_SDS,
+#                                            train, LogRegModel, TRUE)
+# table(stageFourOutcome, stage4Preds)
+```
+```{r, include=FALSE}
+# We see that our results are greatly improved!  The sensitivity is not proportional nor inversely proportional to the stage of the disease.  Overall, we have a sensitivity of 99.1%!
+# 
+# ## Searching for Redundant Predictors in Training Set
+# Although our model with 42 gene predictors behaved very well, there are presumably many other predictors that could have sufficed as well.  Here, we subtract the 42 predictors out of the training set, and retrain the model
+```
+```{r, include=FALSE}
+# # ```{r,  fig.height=12, fig.width=12, dpi=300}
+# # start by grabbing normalized training matrix:
+# trainM <- train$M_norm
+# #colnames(trainM) <- gsub("\\.ENSG.*", "", colnames(trainM))
+# #length(unique(colnames(trainM)))   # NOT unique!
+# 
+# # next, remove the 42 predictors from this matrix:
+# colIDs <- which(colnames(trainM) %in%
+#                    LogRegModel$predFullNames[2:length(LogRegModel$predFullNames)])
+# trainM_no42 <- trainM[,-colIDs]                    # SEPARATE FROM OBJECT
+# 
+# mypal <- defaultPalette
+# 
+# # train Lasso Model
+# set.seed(SEED2)
+# fitToil.lasso2 <- glmnet(trainM_no42, train$outcome, family="binomial",
+#                            alpha = 1)
+# plot(fitToil.lasso2, xvar="lambda", label=TRUE, col=mypal)
+# ```
+# ```{r, fig.height=8, fig.width=8, dpi=300}
+# set.seed(SEED2)                                # need same seed as previous step
+# cv.Toil.lasso2 <- cv.glmnet(trainM_no42, train$outcome
+#                            , family="binomial", alpha=1)
+# plot(cv.Toil.lasso2)
+```
+```{r, include=FALSE}
+# The Lasso Coefficient plots suggest that a lot of the same predictor value of the data are still in the dataset after removing the original 42 predictors.  This time, it takes 56 predictors to be within 1 standard deviation of the minimum binomial deviance.
+# 
+# #### Grabbing Test Set Data to Measure Accuracy of 2nd pass model
+# Let's take a look at the test set accuracy:
+```
+```{r, include=FALSE}
+# start by capturing model2 information:
+# coefsToil2 <- coef(cv.Toil.lasso2, s=cv.Toil.lasso$lambda.1se)
+# LogRegModel2 <- storeMODEL(coefsToil2, train)
+# 
+# colIDs <- which(colnames(test$M_norm) %in%
+#                    LogRegModel2$predFullNames[2:length(LogRegModel2$predFullNames)])
+# toilTestFiltScal56 <- test$M_norm[,colIDs]      # SEPARATE FROM OBJECT
+```
+```{r, include=FALSE}
+# First we add an intercept column to test predictor variables, then we perform
+# matrix multiplication with the predictor coefficients and then look at the
+# prediction performance in the confusion matrix.
+```
+```{r, include=FALSE}
+# toilTestFiltScal56 <- cbind(rep(1,nrow(toilTestFiltScal56)), toilTestFiltScal56)
+# 
+# testPredictions_toil <- ifelse(toilTestFiltScal56 %*% LogRegModel2$predCoefs > 0, 1, 0)
+# table(test$outcome, testPredictions_toil)
+```
+```{r, include=FALSE}
+# We see that the 2nd model performs just as well as the first model.
+# #### Predictor Comparison Across Models
+```
+```{r, include=FALSE}
+# get predictor gene names and Ensembl IDs while removing Intercept term:
+# ensembl_geneID2 <- LogRegModel2$predEntrezID[2:length(LogRegModel2$predEntrezID)]
+# predictorGeneName2s <- LogRegModel2$predGeneNames[2:length(LogRegModel2$predGeneNames)]
+# modelCoefs2 <- LogRegModel2$predCoefs[2:length(LogRegModel2$predCoefs)]
+# ensembl_coefs2 <- data.frame(ensembl_geneID2, modelCoefs2, abs(modelCoefs2))
+# 
+# 
+# 
+# 
+# Ensmbl_HGNC_SYM_DESC <- read.csv(BIOMART_GENE_ATTR_FILE, header=TRUE, stringsAsFactors = F)
+# predGeneAnnot2 <- Ensmbl_HGNC_SYM_DESC %>% dplyr::filter(ensembl_gene_id %in% ensembl_geneID2)
+# # join with ensembl-coeff df-abs coeff
+# rm(Ensmbl_HGNC_SYM_DESC)
+# joinedAnnot2 <- inner_join(predGeneAnnot2, ensembl_coefs2,
+#                           by=c("ensembl_gene_id" = "ensembl_geneID2"))
+# # arrange by order to desc abs coeff and print select columns:
+# joinedAnnot2$description <- gsub(" \\[.*$","",joinedAnnot2$description) # %>% substr(1,40)
+# modelAnnot2 <- as_tibble(joinedAnnot2 %>% arrange(desc(abs.modelCoefs2.)) %>%
+#                            dplyr::select("ensembl_gene_id", "hgnc_symbol", "modelCoefs2",
+#                                          "description"))
+# 
+# # find and fill in missing information:
+# missingIndices <- c(which(modelAnnot2$hgnc_symbol == ""))
+# missing <- modelAnnot2$ensembl_gene_id[missingIndices]
+# findName <- function(ensembl, LogRegModel2){
+#   name <- LogRegModel2$predGeneNames[which(LogRegModel2$predEntrezID == ensembl)]
+#   return(name)
+# }
+# #findName(missing[1], LogRegModel2)
+# missingNames <- unlist(lapply(missing, findName, LogRegModel2=LogRegModel2))
+# modelAnnot2$hgnc_symbol[missingIndices] <- missingNames
+# 
+# print(modelAnnot2, n=57)
+```
+```{r, include=FALSE}
+# We can see that more gene predictors are selected and that the magnitude of the predictors is a bit lower (largest ones 0.3 vs 0.45)
+# 
+# #### Using Correlation Matrix to Compare Predictors
+```
+```{r, include=FALSE}
+# trainM <- train$M_norm
+# # clean up gene names.  I'm going to stick with Ensembl IDs until
+# # point of display
+# colnames(trainM) <- gsub(".*.\\.(ENSG.*$)", "\\1", colnames(trainM))
+# colnames(trainM) <- gsub("\\..*$", "", colnames(trainM))
+# #colnames(trainM) <- gsub("\\.ENSG.*$", "", colnames(trainM))
+# #colnames(trainM) <- gsub("\\.", "-", colnames(trainM))
+# 
+# # gather original and new predictors.  I'll use
+# origPredictors <- modelAnnot$ensembl_gene_id #hgnc_symbol
+# origPredictors <- gsub("\\..*$", "", origPredictors)
+# secondPredictors <- modelAnnot2$ensembl_gene_id #hgnc_symbol
+# secondPredictors <- gsub("\\..*$", "", secondPredictors)
+# allPredictors <- c(origPredictors, secondPredictors)
+# #allPredictors <- gsub("\\..*$", "", allPredictors)
+# #allPredictors <- gsub("\\.", "-", allPredictors)
+# #corrMatrixAll <- cor(trainM[,c(allPredictors)])
+# #corrValues99Predictors <- data.frame(corrMatrix[upper.tri(corrMatrix)])
+# corrMatrixOrig <- cor(trainM[,c(origPredictors)])
+# corrValues42Predictors <- data.frame(corrMatrixOrig[upper.tri(corrMatrixOrig)])
+# corrMatrixSecond <- cor(trainM[,c(secondPredictors)])
+# corrValues57Predictors <- data.frame(corrMatrixSecond[upper.tri(corrMatrixSecond)])
+# 
+# #corrValues99Predictors <-
+# #cbind(corrValues99Predictors, rep("ALL", length(corrValues99Predictors)))
+# corrValues57Predictors <-
+# cbind(corrValues57Predictors, rep("57", length(corrValues57Predictors)))
+# corrValues42Predictors <-
+# cbind(corrValues42Predictors, rep("42", length(corrValues42Predictors)))
+# 
+# # grab sample of other genes in trainM:
+# set.seed(SEED)
+# randSamples <- sample(colnames(trainM)[!colnames(trainM) %in% allPredictors], 100)
+# # colnames(trainM[,randSamples] %in% allPredictors) #OK
+# corrMatrixNonPredictors <- cor(trainM[,randSamples])
+# corrValuesNonPredictors <- data.frame(corrMatrixNonPredictors[
+#   upper.tri(corrMatrixNonPredictors)])
+# corrValuesNonPredictors <-
+#   cbind(corrValuesNonPredictors, rep("NonPredictors", length(corrValuesNonPredictors)))
+# 
+# # corrMatrixNonPredictors <- cor(trainM[,!colnames(trainM) %in% allPredictors])
+# # corrValues32kNonPredictors <-
+# # data.frame(corrMatrixNonPredictors[upper.tri(corrMatrixNonPredictors)])
+# # write.table(corrValues32kNonPredictors, sep="\t", file="nonPredictorsCC.tsv")
+# 
+# 
+# colnames(corrValuesNonPredictors) <- c("CC", "PredictorGroup")
+# colnames(corrValues57Predictors) <- c("CC", "PredictorGroup")
+# colnames(corrValues42Predictors) <- c("CC", "PredictorGroup")
+# 
+# corrValuesAll <- rbind(corrValuesNonPredictors, corrValues57Predictors,
+#                        corrValues42Predictors)
+# 
+# 
+# ggplot(corrValuesAll, aes(x=CC)) +
+#   geom_density(aes(fill=PredictorGroup),alpha=0.5) + #, binwidth=0.05) +
+#   scale_x_continuous(breaks=seq(-1,1,0.05), limits=c(-1.05, 1.05)) +
+#   theme(axis.text.x = element_text(angle=-90, size=6)) +
+#   xlab("correlation coefficient") + xlim(-1,1)
+# ```
+# ```{R}
+# predictorsCorrTotal <- data.frame(predictorsCorrTotal)
+# names(predictorsCorrTotal) <- "CC"
+# ggplot(corrValuesAll, aes(x=CC)) +
+#   geom_density() + #, binwidth=0.05) +
+#   scale_x_continuous(breaks=seq(-1,1,0.05), limits=c(-1.05, 1.05)) +
+#   theme(axis.text.x = element_text(angle=-90, size=6)) +
+#   theme_bw() +
+#   ggtitle("Distribution of Correlation Coefficient with Outcome Variable") +
+#   xlab("correlation coefficient") + xlim(-1,1)
+# 
+
+```
+
+
+
+
+
