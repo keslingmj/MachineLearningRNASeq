@@ -6,11 +6,10 @@ output: rmarkdown::github_document
 ---
 ## Making Cancer Predictions on Breast RNA-Seq Samples
 
-This particular document takes the Toil-normalized TCGA and GTEx breast cancer samples and runs the logistic regression algorithm with lasso regularizer on them.  Importantly, the only sample-to-sample normalization performed in quantile-quantile normalization relative to a single reference sample.  No batch normalization is performed at this point,  as it's the simplest scenario for test samples processed in the clinic, as they will appear one at a time, typically.
+This particular document takes the ComBat-batch-normalized TCGA and GTEx breast cancer samples and runs the logistic regression algorithm with lasso regularizer on them.  Importantly, the only sample-to-sample normalization performed in quantile-quantile normalization relative to a single reference sample.  
 
-The data were downloaded from the UCSC server at:
-https://xenabrowser.net/datapages/?cohort=TCGA%20TARGET%20GTEx&removeHub=https%3A%2F%2Fxena.treehouse.gi.ucsc.edu%3A443
-There are 2 relevant *gene expression RNAseq* datasets there.  *RSEM expected_count (n=19,109)* which is used in this document, and *RSEM expected_count (DESeq2 standardized) (n=19,039)* which was used in the *Toil_Norm.Rmd* file.
+The data were downloaded from https://figshare.com/articles/Data_record_1/5330539
+The breast data are divided into 3 files.  *breast-rsem-count-gtex.txt.gz* contains the GTEX samples.  *brca-rsem-count-tcga.txt.gz* contains the healthy TCGA breast samples.  *brca-rsem-count-tcga-t.txt.gz* contains the tumor TCGA breast samples.
 
 
 The *markdown* and *html* versions of this document have some of the code masked for better readability.  To view the full code, see the [.Rmd version](Toil_Analysis_ObjOrient.Rmd).
@@ -28,7 +27,7 @@ TOILGENEANNOT <- "/Volumes/MK_Ext/RNA-Seq_2019/TOIL_Data/gencode.v23.annotation.
 BIOMART_GENE_ATTR_FILE <- "/Volumes/MK_Ext/Tresorit_iOS/projects/RNA-Seq/MachineLearningRNASeq/geneAttr.csv"
 TCGA_ATTR_FILE <- "/Volumes/MK_Ext/Tresorit_iOS/projects/RNA-Seq/data/TCGA_Attributes_full.txt"
 WANG_MATRIX <- "/Volumes/MK_Ext/Tresorit_iOS/projects/RNA-Seq/data/wangBreastFPKM398_Attrib.txt"
-FULL_TOIL_DATA <- "/Users/mjk/RNA-Seq_2019/TOIL_Data/TcgaTargetGtex_gene_expected_count"
+FULL_TOIL_DATA <- "/Volumes/MK_Ext/RNA-Seq_2019/TOIL_Data/TcgaTargetGtex_gene_expected_count"
 ATTR_FILE = '/Volumes/MK_Ext/Tresorit_iOS/projects/RNA-Seq/data/TCGA_Attributes_full_20200628.txt'
 SEQUENCING_DATE_FILE = "/Volumes/MK_Ext/Tresorit_iOS/projects/RNA-Seq/MachineLearningRNASeq/confoundingElimi/Sequencing_Dates2.tsv"
 SEED <- 233992812
@@ -54,6 +53,7 @@ require(heatmap3)
 require(RColorBrewer)
 require(gplots)
 require(BBmisc)
+require(data.table)
 # require(topGO)
 ```
 
@@ -299,6 +299,7 @@ The RSEM-Counts file originated as the full set of GTEX and TCGA breast samples,
 ##############
 toilSubset <- read.table(WANG_MATRIX, sep="\t", header=TRUE,
                          stringsAsFactors = F)
+# toilSubset2 <- fread(WANG_MATRIX, sep="\t")      #data.table
 rownames(toilSubset) <- toilSubset[,1]
 toilSubset <- toilSubset[,3:ncol(toilSubset)]
 
